@@ -8,14 +8,19 @@ const supabaseAdmin = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 )
 
+type AdminSessionUser = {
+  role?: string
+}
+
 export default async function AdminPage() {
   const session = await auth()
+  const user = session?.user as AdminSessionUser | undefined
 
   if (!session) {
     redirect('/signin')
   }
 
-  if (session.user?.role !== 'admin') {
+  if (user?.role !== 'admin') {
     redirect('/denied')
   }
 
@@ -145,17 +150,17 @@ export default async function AdminPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {(users || []).map((user) => (
-                    <tr key={user.id} className="bg-zinc-950/60">
+                  {(users || []).map((row) => (
+                    <tr key={row.id} className="bg-zinc-950/60">
                       <td className="rounded-l-2xl px-3 py-3">
                         <div className="flex items-center gap-3">
-                          {user.avatar ? (
+                          {row.avatar ? (
                             <img
-                              src={user.avatar}
+                              src={row.avatar}
                               alt={
-                                user.global_name ||
-                                user.username ||
-                                user.discord_user_id
+                                row.global_name ||
+                                row.username ||
+                                row.discord_user_id
                               }
                               className="h-10 w-10 rounded-full border border-zinc-700 object-cover"
                             />
@@ -167,14 +172,14 @@ export default async function AdminPage() {
 
                           <div>
                             <div className="font-medium">
-                              {user.global_name ||
-                                user.username ||
+                              {row.global_name ||
+                                row.username ||
                                 'Has not logged in yet'}
                             </div>
                             <div className="font-mono text-xs text-zinc-500">
-                              {user.username
-                                ? `@${user.username}`
-                                : user.discord_user_id}
+                              {row.username
+                                ? `@${row.username}`
+                                : row.discord_user_id}
                             </div>
                           </div>
                         </div>
@@ -183,18 +188,18 @@ export default async function AdminPage() {
                       <td className="px-3 py-3">
                         <span
                           className={`rounded-full px-3 py-1 text-xs font-medium ${
-                            user.role === 'admin'
+                            row.role === 'admin'
                               ? 'bg-indigo-600 text-white'
                               : 'bg-zinc-700 text-white'
                           }`}
                         >
-                          {user.role}
+                          {row.role}
                         </span>
                       </td>
 
                       <td className="px-3 py-3 text-zinc-400">
-                        {user.created_at
-                          ? new Date(user.created_at).toLocaleString()
+                        {row.created_at
+                          ? new Date(row.created_at).toLocaleString()
                           : '—'}
                       </td>
 
@@ -203,7 +208,7 @@ export default async function AdminPage() {
                           <input
                             type="hidden"
                             name="discord_user_id"
-                            value={user.discord_user_id}
+                            value={row.discord_user_id}
                           />
                           <button
                             type="submit"

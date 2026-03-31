@@ -9,19 +9,20 @@ const supabaseAdmin = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 )
 
-async function requireAdmin() {
-  const session = await auth()
-
-  const user = session?.user as {
+type AdminSessionUser = {
   discordId?: string
   role?: string
-} | undefined
+}
 
-if (!user?.discordId || user.role !== 'admin') {
+async function requireAdmin() {
+  const session = await auth()
+  const user = session?.user as AdminSessionUser | undefined
+
+  if (!user?.discordId || user.role !== 'admin') {
     throw new Error('Unauthorized')
   }
 
-  return session
+  return user
 }
 
 export async function addAllowedUser(formData: FormData) {
@@ -58,7 +59,7 @@ export async function addAllowedUser(formData: FormData) {
 }
 
 export async function removeAllowedUser(formData: FormData) {
-  const session = await requireAdmin()
+  const user = await requireAdmin()
 
   const discordUserId = String(formData.get('discord_user_id') || '').trim()
 
@@ -66,7 +67,7 @@ export async function removeAllowedUser(formData: FormData) {
     throw new Error('Discord ID is required')
   }
 
-  if (discordUserId === user?.discordId) {
+  if (discordUserId === user.discordId) {
     throw new Error('You cannot remove your own admin access here')
   }
 
