@@ -1,23 +1,26 @@
 'use client'
 import React from 'react'
+import { supabase } from '@/lib/supabase'
 
 type Spot = {
   id: number
+  map_id: string
   title: string
   role: string
   x: number
   y: number
   notes: string
-  youtube?: string
+  youtube?: string | null
   images?: string[]
   size: number
+  created_at?: string
 }
 
 type MapData = {
   id: string
   name: string
   image: string
-  overlay?: string
+  overlay?: string | null
   spots: Spot[]
 }
 
@@ -39,27 +42,64 @@ const fallbackColorClasses = [
   'bg-amber-500',
 ]
 
-const initialMaps: MapData[] = [
-  { id: 'utah', name: 'Utah Beach', image: '/maps/utah.jpg', overlay: '/maps/utah_sat.jpg', spots: [] },
-  { id: 'omaha', name: 'Omaha Beach', image: '/maps/omaha.jpg', overlay: '/maps/omaha_sat.jpg', spots: [] },
-  { id: 'carentan', name: 'Carentan', image: '/maps/carentan.jpg', overlay: '/maps/carentan_sat.jpg', spots: [] },
-  { id: 'phl', name: 'Purple Heart Lane', image: '/maps/phl.jpg', overlay: '/maps/phl_sat.jpg', spots: [] },
-  { id: 'remagen', name: 'Remagen', image: '/maps/remagen.jpg', overlay: '/maps/remagen_sat.jpg', spots: [] },
-  { id: 'hurtgen', name: 'Hurtgen Forest', image: '/maps/hurtgen.jpg', overlay: '/maps/hurtgen_sat.jpg', spots: [] },
-  { id: 'hill400', name: 'Hill 400', image: '/maps/hill400.jpg', overlay: '/maps/hill400_sat.jpg', spots: [] },
-  { id: 'elsenborn_ridge', name: 'Elsenborn Ridge', image: '/maps/elsenborn_ridge.jpg', overlay: '/maps/elsenborn_ridge_sat.jpg', spots: [] },
-  { id: 'foy', name: 'Foy', image: '/maps/foy.jpg', overlay: '/maps/foy_sat.jpg', spots: [] },
-  { id: 'mortain', name: 'Mortain', image: '/maps/mortain.jpg', overlay: '/maps/mortain_sat.jpg', spots: [] },
-  { id: 'driel', name: 'Driel', image: '/maps/driel.jpg', overlay: '/maps/driel_sat.jpg', spots: [] },
-  { id: 'kursk', name: 'Kursk', image: '/maps/kursk.jpg', overlay: '/maps/kursk_sat.jpg', spots: [] },
-  { id: 'kharkov', name: 'Kharkov', image: '/maps/kharkov.jpg', overlay: '/maps/kharkov_sat.jpg', spots: [] },
-  { id: 'stalingrad', name: 'Stalingrad', image: '/maps/stalingrad.jpg', overlay: '/maps/stalingrad_sat.jpg', spots: [] },
-  { id: 'smolensk', name: 'Smolensk', image: '/maps/smolensk.jpg', overlay: '/maps/smolensk_sat.jpg', spots: [] },
-  { id: 'sme', name: 'St. Mere Eglise', image: '/maps/sme.jpg', overlay: '/maps/sme_sat.jpg', spots: [] },
-  { id: 'smdm', name: 'St. Marie du Mont', image: '/maps/smdm.jpg', overlay: '/maps/smdm_sat.jpg', spots: [] },
-  { id: 'el_alamein', name: 'El Alamein', image: '/maps/el_alamein.jpg', overlay: '/maps/el_alamein_sat.jpg', spots: [] },
-  { id: 'tobruk', name: 'Tobruk', image: '/maps/tobruk.jpg', overlay: '/maps/tobruk_sat.jpg', spots: [] },
-]
+function getYouTubeEmbedUrl(url?: string | null) {
+  if (!url) return null
+
+  try {
+    const parsed = new URL(url.trim())
+    const host = parsed.hostname.replace(/^www\./, '')
+
+    let id: string | null = null
+
+    if (host === 'youtube.com' || host === 'm.youtube.com') {
+      id = parsed.searchParams.get('v')
+      if (!id) {
+        const parts = parsed.pathname.split('/').filter(Boolean)
+        const embedIndex = parts.indexOf('embed')
+        if (embedIndex !== -1 && parts[embedIndex + 1]) {
+          id = parts[embedIndex + 1]
+        }
+      }
+    } else if (host === 'youtu.be') {
+      id = parsed.pathname.split('/').filter(Boolean)[0] || null
+    }
+
+    if (!id) return null
+
+    id = id.split('?')[0].split('&')[0]
+    return `https://www.youtube.com/embed/${id}`
+  } catch {
+    return null
+  }
+}
+
+function normalizeSpot(raw: any): Spot {
+  return {
+    id: raw.id,
+    map_id: raw.map_id,
+    title: raw.title ?? '',
+    role: raw.role ?? 'MG',
+    x: Number(raw.x ?? 0),
+    y: Number(raw.y ?? 0),
+    notes: raw.notes ?? '',
+    youtube: raw.youtube ?? null,
+    images: Array.isArray(raw.images) ? raw.images : [],
+    size: Number(raw.size ?? 14),
+    created_at: raw.created_at,
+  }
+}
+
+function buildMapsWithSpots(mapsData: any[], spotsData: any[]): MapData[] {
+  const normalizedSpots = (spotsData || []).map(normalizeSpot)
+
+  return (mapsData || []).map((map) => ({
+    id: map.id,
+    name: map.name,
+    image: map.image,
+    overlay: map.overlay,
+    spots: normalizedSpots.filter((spot) => spot.map_id === map.id),
+  }))
+}
 
 export default function IntelMap() {
   const [roles, setRoles] = React.useState<string[]>([
@@ -72,12 +112,10 @@ export default function IntelMap() {
   const [roleColors, setRoleColors] =
     React.useState<Record<string, string>>(defaultRoleColors)
 
-  const [maps, setMaps] = React.useState<MapData[]>(initialMaps)
+  const [maps, setMaps] = React.useState<MapData[]>([])
   const [selectedMapId, setSelectedMapId] = React.useState<string>('utah')
-
-  const selectedMap = maps.find((map) => map.id === selectedMapId) || maps[0]
-
   const [selectedSpot, setSelectedSpot] = React.useState<Spot | null>(null)
+
   const [roleFilter, setRoleFilter] = React.useState<string>('All')
   const [sortMode, setSortMode] = React.useState<'alphabetical' | 'role'>(
     'alphabetical'
@@ -101,6 +139,7 @@ export default function IntelMap() {
     y: number
   } | null>(null)
   const [lightboxImage, setLightboxImage] = React.useState<string | null>(null)
+  const [isLoading, setIsLoading] = React.useState(true)
 
   const [newSpot, setNewSpot] = React.useState({
     title: '',
@@ -121,22 +160,15 @@ export default function IntelMap() {
     originY: 0,
   })
 
-  const hasSatellite = Boolean(selectedMap?.overlay) && !overlayBroken[selectedMap.id]
+  const selectedMap = maps.find((map) => map.id === selectedMapId) || null
 
-  React.useEffect(() => {
-    const currentMap = maps.find((map) => map.id === selectedMapId)
-    setSelectedSpot(currentMap?.spots[0] || null)
-    setSearchTerm('')
-    setRoleFilter('All')
-    setSortMode('alphabetical')
-    setScale(1)
-    setPosition({ x: 0, y: 0 })
-    setShowAddSpot(false)
-    setPendingPlacement(null)
-    setShowSatellite(false)
-  }, [selectedMapId, maps])
+  const hasSatellite =
+    Boolean(selectedMap?.overlay) &&
+    !!selectedMap &&
+    !overlayBroken[selectedMap.id]
 
   const currentSpots = selectedMap?.spots || []
+  const selectedSpotEmbedUrl = getYouTubeEmbedUrl(selectedSpot?.youtube)
 
   const filteredSpots = currentSpots.filter((spot) => {
     const roleMatch = roleFilter === 'All' || spot.role === roleFilter
@@ -164,14 +196,6 @@ export default function IntelMap() {
     return fallbackColorClasses[0]
   }
 
-  const updateCurrentMapSpots = (updater: (spots: Spot[]) => Spot[]) => {
-    setMaps((prev) =>
-      prev.map((map) =>
-        map.id === selectedMapId ? { ...map, spots: updater(map.spots) } : map
-      )
-    )
-  }
-
   const clampPosition = React.useCallback(
     (x: number, y: number, incomingScale = scale) => {
       const viewport = viewportRef.current
@@ -189,47 +213,118 @@ export default function IntelMap() {
     [scale]
   )
 
-  const zoomIn = () => {
-    setScale((prev) => Math.min(prev + 0.2, 3))
-  }
+  React.useEffect(() => {
+    async function loadData() {
+      setIsLoading(true)
 
-  const zoomOut = () => {
-    setScale((prev) => {
-      const next = Math.max(prev - 0.2, 1)
-      setPosition((old) => clampPosition(old.x, old.y, next))
-      return next
+      const [{ data: mapsData, error: mapsError }, { data: spotsData, error: spotsError }] =
+        await Promise.all([
+          supabase.from('maps').select('*').order('name', { ascending: true }),
+          supabase.from('spots').select('*').order('id', { ascending: true }),
+        ])
+
+      if (mapsError) console.error('Error loading maps:', mapsError)
+      if (spotsError) console.error('Error loading spots:', spotsError)
+
+      const builtMaps = buildMapsWithSpots(mapsData || [], spotsData || [])
+      setMaps(builtMaps)
+
+      if (builtMaps.length > 0) {
+        setSelectedMapId((prev) =>
+          builtMaps.some((m) => m.id === prev) ? prev : builtMaps[0].id
+        )
+      }
+
+      setIsLoading(false)
+    }
+
+    loadData()
+  }, [])
+
+  React.useEffect(() => {
+    const channel = supabase
+      .channel('spots-live')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'spots' },
+        (payload) => {
+          const eventType = payload.eventType
+
+          if (eventType === 'INSERT') {
+            const incoming = normalizeSpot(payload.new)
+
+            setMaps((prev) =>
+              prev.map((map) =>
+                map.id === incoming.map_id
+                  ? { ...map, spots: [...map.spots, incoming] }
+                  : map
+              )
+            )
+          }
+
+          if (eventType === 'UPDATE') {
+            const incoming = normalizeSpot(payload.new)
+
+            setMaps((prev) =>
+              prev.map((map) => ({
+                ...map,
+                spots:
+                  map.id === incoming.map_id
+                    ? map.spots.map((spot) =>
+                        spot.id === incoming.id ? incoming : spot
+                      )
+                    : map.spots.filter((spot) => spot.id !== incoming.id),
+              }))
+            )
+
+            setSelectedSpot((prev) =>
+              prev && prev.id === incoming.id ? incoming : prev
+            )
+          }
+
+          if (eventType === 'DELETE') {
+            const deletedId = payload.old.id as number
+
+            setMaps((prev) =>
+              prev.map((map) => ({
+                ...map,
+                spots: map.spots.filter((spot) => spot.id !== deletedId),
+              }))
+            )
+
+            setSelectedSpot((prev) =>
+              prev && prev.id === deletedId ? null : prev
+            )
+          }
+        }
+      )
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [])
+
+  React.useEffect(() => {
+    const currentMap = maps.find((map) => map.id === selectedMapId)
+
+    setSelectedSpot((prev) => {
+      if (!currentMap) return null
+      if (prev && currentMap.spots.some((spot) => spot.id === prev.id)) {
+        return currentMap.spots.find((spot) => spot.id === prev.id) || null
+      }
+      return currentMap.spots[0] || null
     })
-  }
 
-  const resetView = () => {
+    setSearchTerm('')
+    setRoleFilter('All')
+    setSortMode('alphabetical')
     setScale(1)
     setPosition({ x: 0, y: 0 })
-  }
-
-  const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (showAddSpot) return
-    setIsDragging(true)
-    dragRef.current = {
-      startX: e.clientX,
-      startY: e.clientY,
-      originX: position.x,
-      originY: position.y,
-    }
-  }
-
-  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!isDragging) return
-
-    const dx = e.clientX - dragRef.current.startX
-    const dy = e.clientY - dragRef.current.startY
-    const next = clampPosition(
-      dragRef.current.originX + dx,
-      dragRef.current.originY + dy
-    )
-    setPosition(next)
-  }
-
-  const stopDragging = () => setIsDragging(false)
+    setShowAddSpot(false)
+    setPendingPlacement(null)
+    setShowSatellite(false)
+  }, [selectedMapId, maps])
 
   React.useEffect(() => {
     const el = viewportRef.current
@@ -295,6 +390,46 @@ export default function IntelMap() {
       document.body.style.overflow = previousOverflow
     }
   }, [])
+
+  const zoomIn = () => setScale((prev) => Math.min(prev + 0.2, 3))
+
+  const zoomOut = () => {
+    setScale((prev) => {
+      const next = Math.max(prev - 0.2, 1)
+      setPosition((old) => clampPosition(old.x, old.y, next))
+      return next
+    })
+  }
+
+  const resetView = () => {
+    setScale(1)
+    setPosition({ x: 0, y: 0 })
+  }
+
+  const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (showAddSpot) return
+    setIsDragging(true)
+    dragRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      originX: position.x,
+      originY: position.y,
+    }
+  }
+
+  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isDragging) return
+
+    const dx = e.clientX - dragRef.current.startX
+    const dy = e.clientY - dragRef.current.startY
+    const next = clampPosition(
+      dragRef.current.originX + dx,
+      dragRef.current.originY + dy
+    )
+    setPosition(next)
+  }
+
+  const stopDragging = () => setIsDragging(false)
 
   const addRole = () => {
     const trimmed = newRoleName.trim()
@@ -376,25 +511,31 @@ export default function IntelMap() {
     }))
   }
 
-  const saveNewSpot = () => {
+  const saveNewSpot = async () => {
     if (!pendingPlacement) return
     if (!newSpot.title.trim()) return
     if (!newSpot.role.trim()) return
+    if (!selectedMapId) return
 
-    const created: Spot = {
-      id: Date.now(),
+    const payload = {
+      map_id: selectedMapId,
       title: newSpot.title.trim(),
       role: newSpot.role,
       notes: newSpot.notes.trim(),
-      youtube: newSpot.youtube.trim(),
+      youtube: newSpot.youtube.trim() || null,
       images: newSpot.images,
       x: pendingPlacement.x,
       y: pendingPlacement.y,
       size: newSpot.size,
     }
 
-    updateCurrentMapSpots((prev) => [...prev, created])
-    setSelectedSpot(created)
+    const { error } = await supabase.from('spots').insert(payload)
+
+    if (error) {
+      console.error('Error saving spot:', error)
+      return
+    }
+
     setShowSpotCard(true)
     setShowAddSpot(false)
     setPendingPlacement(null)
@@ -409,24 +550,32 @@ export default function IntelMap() {
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
-  const deleteSelectedSpot = () => {
+  const deleteSelectedSpot = async () => {
     if (!selectedSpot) return
 
-    const remaining = currentSpots.filter((spot) => spot.id !== selectedSpot.id)
-    updateCurrentMapSpots(() => remaining)
-    setSelectedSpot(remaining[0] || null)
+    const { error } = await supabase
+      .from('spots')
+      .delete()
+      .eq('id', selectedSpot.id)
+
+    if (error) {
+      console.error('Error deleting spot:', error)
+    }
   }
 
-  const updateSelectedSpotSize = (newSize: number) => {
+  const updateSelectedSpotSize = async (newSize: number) => {
     if (!selectedSpot) return
 
-    updateCurrentMapSpots((prev) =>
-      prev.map((spot) =>
-        spot.id === selectedSpot.id ? { ...spot, size: newSize } : spot
-      )
-    )
-
     setSelectedSpot((prev) => (prev ? { ...prev, size: newSize } : prev))
+
+    const { error } = await supabase
+      .from('spots')
+      .update({ size: newSize })
+      .eq('id', selectedSpot.id)
+
+    if (error) {
+      console.error('Error updating spot size:', error)
+    }
   }
 
   const gridClass =
@@ -441,13 +590,24 @@ export default function IntelMap() {
   return (
     <div className="min-h-screen bg-zinc-950 p-4 text-white md:p-6">
       <div className="mb-5 flex flex-col gap-4">
-        <div>
-          <p className="text-sm uppercase tracking-[0.25em] text-zinc-400">
-            Phase 1 Prototype
-          </p>
-          <h1 className="text-3xl font-bold tracking-tight md:text-5xl">
-            Pathfinders RatSpots
-          </h1>
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <p className="text-sm uppercase tracking-[0.25em] text-zinc-400">
+              Phase 1 Prototype
+            </p>
+            <h1 className="text-3xl font-bold tracking-tight md:text-5xl">
+              Pathfinders RatSpots
+            </h1>
+          </div>
+
+          <div className="flex gap-2">
+            <a
+              href="/admin"
+              className="rounded-2xl border border-zinc-700 bg-zinc-800 px-4 py-2 text-sm font-medium hover:bg-zinc-700"
+            >
+              Admin Panel
+            </a>
+          </div>
         </div>
 
         <div className="flex flex-wrap items-end gap-3">
@@ -573,7 +733,9 @@ export default function IntelMap() {
         <div className="rounded-3xl border border-zinc-800 bg-zinc-900/70 p-4 shadow-2xl">
           <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
             <div>
-              <h2 className="text-xl font-semibold">{selectedMap.name}</h2>
+              <h2 className="text-xl font-semibold">
+                {selectedMap?.name || (isLoading ? 'Loading maps...' : 'No map selected')}
+              </h2>
               <p className="text-sm text-zinc-400">
                 Scroll to zoom, drag to pan
                 {showAddSpot ? ' • Click map to place a new spot' : ''}
@@ -669,103 +831,109 @@ export default function IntelMap() {
             onMouseLeave={stopDragging}
           >
             <div className="relative mx-auto aspect-[4/3] w-full max-h-[72vh] bg-zinc-950">
-              <div
-                className={`absolute inset-0 ${
-                  isDragging
-                    ? 'cursor-grabbing'
-                    : showAddSpot
-                    ? 'cursor-crosshair'
-                    : 'cursor-grab'
-                }`}
-                onMouseDown={handleMouseDown}
-                onClick={handleMapClickForPlacement}
-                style={{
-                  transform: `translate(${position.x}px, ${position.y}px) scale(${scale})`,
-                  transformOrigin: 'center center',
-                }}
-              >
-                <img
-                  src={selectedMap.image}
-                  alt={selectedMap.name}
-                  className="pointer-events-none absolute inset-0 h-full w-full object-contain"
-                  draggable={false}
-                />
-
-                {hasSatellite && showSatellite && selectedMap.overlay && (
+              {selectedMap ? (
+                <div
+                  className={`absolute inset-0 ${
+                    isDragging
+                      ? 'cursor-grabbing'
+                      : showAddSpot
+                      ? 'cursor-crosshair'
+                      : 'cursor-grab'
+                  }`}
+                  onMouseDown={handleMouseDown}
+                  onClick={handleMapClickForPlacement}
+                  style={{
+                    transform: `translate(${position.x}px, ${position.y}px) scale(${scale})`,
+                    transformOrigin: 'center center',
+                  }}
+                >
                   <img
-                    src={selectedMap.overlay}
-                    alt={`${selectedMap.name} satellite`}
+                    src={selectedMap.image}
+                    alt={selectedMap.name}
                     className="pointer-events-none absolute inset-0 h-full w-full object-contain"
                     draggable={false}
-                    style={{ opacity: overlayOpacity / 100 }}
-                    onError={() =>
-                      setOverlayBroken((prev) => ({
-                        ...prev,
-                        [selectedMap.id]: true,
-                      }))
-                    }
                   />
-                )}
 
-                {filteredSpots.map((spot) => {
-                  const isActive = selectedSpot?.id === spot.id
-                  const outerSize = `${spot.size}px`
-                  const innerSize = `${Math.max(
-                    4,
-                    Math.round(spot.size * 0.42)
-                  )}px`
+                  {hasSatellite && showSatellite && selectedMap.overlay && (
+                    <img
+                      src={selectedMap.overlay}
+                      alt={`${selectedMap.name} satellite`}
+                      className="pointer-events-none absolute inset-0 h-full w-full object-contain"
+                      draggable={false}
+                      style={{ opacity: overlayOpacity / 100 }}
+                      onError={() =>
+                        setOverlayBroken((prev) => ({
+                          ...prev,
+                          [selectedMap.id]: true,
+                        }))
+                      }
+                    />
+                  )}
 
-                  return (
-                    <button
-                      key={spot.id}
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        setSelectedSpot(spot)
-                        setShowSpotCard(true)
-                      }}
-                      className="group absolute -translate-x-1/2 -translate-y-1/2"
-                      style={{ left: `${spot.x}%`, top: `${spot.y}%` }}
-                      aria-label={spot.title}
-                    >
-                      <span
-                        className={`absolute inset-0 rounded-full blur-sm opacity-70 ${getRoleColor(
-                          spot.role
-                        )}`}
-                        style={{ width: outerSize, height: outerSize }}
-                      />
-                      <span
-                        className={`relative flex items-center justify-center rounded-full border border-white/80 ${getRoleColor(
-                          spot.role
-                        )} ${isActive ? 'scale-125' : 'group-hover:scale-110'}`}
-                        style={{ width: outerSize, height: outerSize }}
+                  {filteredSpots.map((spot) => {
+                    const isActive = selectedSpot?.id === spot.id
+                    const outerSize = `${spot.size}px`
+                    const innerSize = `${Math.max(
+                      4,
+                      Math.round(spot.size * 0.42)
+                    )}px`
+
+                    return (
+                      <button
+                        key={spot.id}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setSelectedSpot(spot)
+                          setShowSpotCard(true)
+                        }}
+                        className="group absolute -translate-x-1/2 -translate-y-1/2"
+                        style={{ left: `${spot.x}%`, top: `${spot.y}%` }}
+                        aria-label={spot.title}
                       >
                         <span
-                          className="rounded-full bg-white"
-                          style={{ width: innerSize, height: innerSize }}
+                          className={`absolute inset-0 rounded-full blur-sm opacity-70 ${getRoleColor(
+                            spot.role
+                          )}`}
+                          style={{ width: outerSize, height: outerSize }}
                         />
-                      </span>
-                    </button>
-                  )
-                })}
+                        <span
+                          className={`relative flex items-center justify-center rounded-full border border-white/80 ${getRoleColor(
+                            spot.role
+                          )} ${isActive ? 'scale-125' : 'group-hover:scale-110'}`}
+                          style={{ width: outerSize, height: outerSize }}
+                        >
+                          <span
+                            className="rounded-full bg-white"
+                            style={{ width: innerSize, height: innerSize }}
+                          />
+                        </span>
+                      </button>
+                    )
+                  })}
 
-                {pendingPlacement && (
-                  <div
-                    className="absolute -translate-x-1/2 -translate-y-1/2"
-                    style={{
-                      left: `${pendingPlacement.x}%`,
-                      top: `${pendingPlacement.y}%`,
-                    }}
-                  >
+                  {pendingPlacement && (
                     <div
-                      className="rounded-full border border-white bg-blue-500/85 shadow-lg"
+                      className="absolute -translate-x-1/2 -translate-y-1/2"
                       style={{
-                        width: `${newSpot.size}px`,
-                        height: `${newSpot.size}px`,
+                        left: `${pendingPlacement.x}%`,
+                        top: `${pendingPlacement.y}%`,
                       }}
-                    />
-                  </div>
-                )}
-              </div>
+                    >
+                      <div
+                        className="rounded-full border border-white bg-blue-500/85 shadow-lg"
+                        style={{
+                          width: `${newSpot.size}px`,
+                          height: `${newSpot.size}px`,
+                        }}
+                      />
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="flex h-full items-center justify-center text-zinc-500">
+                  {isLoading ? 'Loading maps...' : 'No maps found'}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -1041,14 +1209,29 @@ export default function IntelMap() {
                   </div>
                 </div>
 
+                {selectedSpotEmbedUrl && (
+                  <div className="mt-5">
+                    <div className="overflow-hidden rounded-2xl border border-zinc-800 bg-black">
+                      <iframe
+                        className="aspect-video w-full"
+                        src={`${selectedSpotEmbedUrl}?rel=0&modestbranding=1`}
+                        title={`${selectedSpot.title} video`}
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                        referrerPolicy="strict-origin-when-cross-origin"
+                        allowFullScreen
+                      />
+                    </div>
+                  </div>
+                )}
+
                 {selectedSpot.youtube && (
                   <a
                     href={selectedSpot.youtube}
                     target="_blank"
                     rel="noreferrer"
-                    className="mt-5 inline-flex w-fit items-center rounded-2xl border border-zinc-700 bg-zinc-800 px-4 py-2 text-sm font-medium hover:bg-zinc-700"
+                    className="mt-3 inline-flex w-fit items-center rounded-2xl border border-zinc-700 bg-zinc-800 px-4 py-2 text-sm font-medium hover:bg-zinc-700"
                   >
-                    Open YouTube Clip
+                    Open on YouTube
                   </a>
                 )}
 
@@ -1060,8 +1243,7 @@ export default function IntelMap() {
                 </button>
 
                 <div className="mt-auto pt-6 text-xs leading-5 text-zinc-500">
-                  Next step: Discord login + allowlist access, or permanent save
-                  storage.
+                  Live database-backed spots are on. Realtime updates are active.
                 </div>
               </div>
             ) : (
