@@ -8,10 +8,11 @@ type RightTab = 'list' | 'details'
 type MarkerShape = 'circle' | 'square' | 'triangle'
 
 type Spot = {
-  id: number
+  id: number | string
   map_id: string
   title: string
   role: string
+  roles: string[]
   side: SpotSide
   x: number
   y: number
@@ -20,6 +21,7 @@ type Spot = {
   images?: string[]
   size: number
   created_at?: string
+  pending?: boolean
 }
 
 type MapData = {
@@ -138,20 +140,44 @@ function getYouTubeEmbedUrl(url?: string | null) {
   }
 }
 
+function clampSpotSize(size: number) {
+  return Math.max(8, Math.min(20, Number(size || 12)))
+}
+
+function normalizeRoles(raw: any): string[] {
+  if (Array.isArray(raw.roles) && raw.roles.length > 0) {
+    return raw.roles.filter(Boolean)
+  }
+
+  if (typeof raw.role === 'string' && raw.role.trim()) {
+    return [raw.role.trim()]
+  }
+
+  return ['MG']
+}
+
+function getPrimaryRoleFromSpot(raw: any): string {
+  const roles = normalizeRoles(raw)
+  return roles[0] || 'MG'
+}
+
 function normalizeSpot(raw: any): Spot {
+  const roles = normalizeRoles(raw)
   return {
     id: raw.id,
     map_id: raw.map_id,
     title: raw.title ?? '',
-    role: raw.role ?? 'MG',
+    role: getPrimaryRoleFromSpot(raw),
+    roles,
     side: normalizeSide(raw.side),
     x: Number(raw.x ?? 0),
     y: Number(raw.y ?? 0),
     notes: raw.notes ?? '',
     youtube: raw.youtube ?? null,
     images: Array.isArray(raw.images) ? raw.images : [],
-    size: Number(raw.size ?? 20),
+    size: clampSpotSize(raw.size ?? 12),
     created_at: raw.created_at,
+    pending: false,
   }
 }
 
@@ -232,7 +258,7 @@ function ShapeMarker({
         className={`${common} rounded-[6px]`}
         style={{ width: `${size}px`, height: `${size}px` }}
       >
-        <MarkerIcon icon={icon} sizePx={Math.max(8, Math.round(size * 0.5))} />
+        <MarkerIcon icon={icon} sizePx={Math.max(6, Math.round(size * 0.5))} />
       </span>
     )
   }
@@ -256,7 +282,7 @@ function ShapeMarker({
           />
         </span>
         <span className="relative mt-1">
-          <MarkerIcon icon={icon} sizePx={Math.max(8, Math.round(size * 0.42))} />
+          <MarkerIcon icon={icon} sizePx={Math.max(6, Math.round(size * 0.42))} />
         </span>
       </span>
     )
@@ -267,7 +293,7 @@ function ShapeMarker({
       className={`${common} rounded-full`}
       style={{ width: `${size}px`, height: `${size}px` }}
     >
-      <MarkerIcon icon={icon} sizePx={Math.max(8, Math.round(size * 0.5))} />
+      <MarkerIcon icon={icon} sizePx={Math.max(6, Math.round(size * 0.5))} />
     </span>
   )
 }
@@ -300,6 +326,7 @@ export default function IntelMap() {
   )
   const [searchTerm, setSearchTerm] = React.useState('')
   const [showAddSpot, setShowAddSpot] = React.useState(false)
+  const [isSavingNewSpot, setIsSavingNewSpot] = React.useState(false)
 
   const [scale, setScale] = React.useState(1)
   const [position, setPosition] = React.useState({ x: 0, y: 0 })
@@ -318,22 +345,22 @@ export default function IntelMap() {
 
   const [newSpot, setNewSpot] = React.useState({
     title: '',
-    role: 'MG',
+    roles: ['MG'] as string[],
     side: 'Both' as SpotSide,
     notes: '',
     youtube: '',
     images: [] as string[],
     imageFiles: [] as File[],
-    size: 20,
+    size: 12,
   })
 
   const [editSpot, setEditSpot] = React.useState({
     title: '',
-    role: 'MG',
+    roles: ['MG'] as string[],
     side: 'Both' as SpotSide,
     notes: '',
     youtube: '',
-    size: 20,
+    size: 12,
   })
 
   const viewportRef = React.useRef<HTMLDivElement | null>(null)
@@ -370,14 +397,36 @@ export default function IntelMap() {
     return FIXED_ROLES.find((r) => r.name === roleName)?.shape || 'circle'
   }
 
+  const getRenderedSpotSize = (spot: Spot) => {
+    const primaryRole = spot.roles?.[0] || spot.role || 'MG'
+
+    if (primaryRole === 'Tank') {
+      return Math.max(5, Math.round(spot.size * 0.6))
+    }
+
+    return spot.size
+  }
+
+  const getRenderedDraftSize = (roles: string[], size: number) => {
+    const primaryRole = roles?.[0] || 'MG'
+
+    if (primaryRole === 'Tank') {
+      return Math.max(5, Math.round(size * 0.6))
+    }
+
+    return size
+  }
+
   const filteredSpots = currentSpots.filter((spot) => {
-    const roleMatch = roleFilter === 'All' || spot.role === roleFilter
+    const roleMatch =
+      roleFilter === 'All' || (spot.roles || []).includes(roleFilter)
+
     const search = searchTerm.trim().toLowerCase()
 
     const textMatch =
       search === '' ||
       spot.title.toLowerCase().includes(search) ||
-      spot.role.toLowerCase().includes(search) ||
+      (spot.roles || []).some((role) => role.toLowerCase().includes(search)) ||
       spot.notes.toLowerCase().includes(search) ||
       spot.side.toLowerCase().includes(search)
 
@@ -386,7 +435,7 @@ export default function IntelMap() {
 
   const sortedSpots = [...filteredSpots].sort((a, b) => {
     if (sortMode === 'role') {
-      const roleCompare = a.role.localeCompare(b.role)
+      const roleCompare = (a.roles?.[0] || '').localeCompare(b.roles?.[0] || '')
       if (roleCompare !== 0) return roleCompare
     }
     return a.title.localeCompare(b.title)
@@ -408,6 +457,68 @@ export default function IntelMap() {
     },
     [scale]
   )
+
+  const resetNewSpotState = React.useCallback(() => {
+    setNewSpot({
+      title: '',
+      roles: ['MG'],
+      side: 'Both',
+      notes: '',
+      youtube: '',
+      images: [],
+      imageFiles: [],
+      size: 12,
+    })
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }, [])
+
+  const revokeNewSpotPreviewUrls = React.useCallback((urls: string[]) => {
+    urls.forEach((url) => {
+      if (url.startsWith('blob:')) {
+        URL.revokeObjectURL(url)
+      }
+    })
+  }, [])
+
+  const addSpotToMaps = React.useCallback((spot: Spot) => {
+    setMaps((prev) =>
+      prev.map((map) => {
+        if (map.id !== spot.map_id) return map
+        if (map.spots.some((existing) => existing.id === spot.id)) return map
+        return { ...map, spots: [...map.spots, spot] }
+      })
+    )
+  }, [])
+
+  const replaceSpotInMaps = React.useCallback((tempId: string, savedSpot: Spot) => {
+    setMaps((prev) =>
+      prev.map((map) => {
+        if (map.id !== savedSpot.map_id) {
+          return {
+            ...map,
+            spots: map.spots.filter((spot) => spot.id !== tempId),
+          }
+        }
+
+        const withoutTemp = map.spots.filter((spot) => spot.id !== tempId)
+        const alreadyHasSaved = withoutTemp.some((spot) => spot.id === savedSpot.id)
+
+        return {
+          ...map,
+          spots: alreadyHasSaved ? withoutTemp : [...withoutTemp, savedSpot],
+        }
+      })
+    )
+  }, [])
+
+  const removeSpotFromMaps = React.useCallback((spotId: number | string) => {
+    setMaps((prev) =>
+      prev.map((map) => ({
+        ...map,
+        spots: map.spots.filter((spot) => spot.id !== spotId),
+      }))
+    )
+  }, [])
 
   React.useEffect(() => {
     async function loadData() {
@@ -450,14 +561,7 @@ export default function IntelMap() {
 
           if (eventType === 'INSERT') {
             const incoming = normalizeSpot(payload.new)
-
-            setMaps((prev) =>
-              prev.map((map) =>
-                map.id === incoming.map_id
-                  ? { ...map, spots: [...map.spots, incoming] }
-                  : map
-              )
-            )
+            addSpotToMaps(incoming)
           }
 
           if (eventType === 'UPDATE') {
@@ -483,12 +587,7 @@ export default function IntelMap() {
           if (eventType === 'DELETE') {
             const deletedId = payload.old.id as number
 
-            setMaps((prev) =>
-              prev.map((map) => ({
-                ...map,
-                spots: map.spots.filter((spot) => spot.id !== deletedId),
-              }))
-            )
+            removeSpotFromMaps(deletedId)
 
             setSelectedSpot((prev) =>
               prev && prev.id === deletedId ? null : prev
@@ -501,19 +600,13 @@ export default function IntelMap() {
     return () => {
       supabase.removeChannel(channel)
     }
-  }, [])
+  }, [addSpotToMaps, removeSpotFromMaps])
 
+  // Only reset the panel when the map changes, not every time spots change
   React.useEffect(() => {
     const currentMap = maps.find((map) => map.id === selectedMapId)
 
-    setSelectedSpot((prev) => {
-      if (!currentMap) return null
-      if (prev && currentMap.spots.some((spot) => spot.id === prev.id)) {
-        return currentMap.spots.find((spot) => spot.id === prev.id) || null
-      }
-      return currentMap.spots[0] || null
-    })
-
+    setSelectedSpot(currentMap?.spots[0] || null)
     setSearchTerm('')
     setRoleFilter('All')
     setSortMode('alphabetical')
@@ -524,7 +617,28 @@ export default function IntelMap() {
     setShowSatellite(false)
     setEditingSpotId(null)
     setRightTab('list')
-  }, [selectedMapId, maps])
+  }, [selectedMapId])
+
+  // Keep selected spot synced when maps update, without resetting the whole panel
+  React.useEffect(() => {
+    const currentMap = maps.find((map) => map.id === selectedMapId)
+    if (!currentMap) {
+      setSelectedSpot(null)
+      return
+    }
+
+    setSelectedSpot((prev) => {
+      if (!prev) return null
+      const updated = currentMap.spots.find((spot) => spot.id === prev.id)
+      return updated || null
+    })
+  }, [maps, selectedMapId])
+
+  React.useEffect(() => {
+    return () => {
+      revokeNewSpotPreviewUrls(newSpot.images)
+    }
+  }, [newSpot.images, revokeNewSpotPreviewUrls])
 
   React.useEffect(() => {
     const el = viewportRef.current
@@ -669,6 +783,11 @@ export default function IntelMap() {
     const remainingSlots = 3 - newSpot.imageFiles.length
     const limitedFiles = files.slice(0, remainingSlots)
 
+    if (!limitedFiles.length) {
+      if (fileInputRef.current) fileInputRef.current.value = ''
+      return
+    }
+
     const previewUrls = limitedFiles.map((file) => URL.createObjectURL(file))
 
     setNewSpot((prev) => ({
@@ -681,11 +800,26 @@ export default function IntelMap() {
   }
 
   const removeNewSpotImage = (index: number) => {
-    setNewSpot((prev) => ({
-      ...prev,
-      images: prev.images.filter((_, i) => i !== index),
-      imageFiles: prev.imageFiles.filter((_, i) => i !== index),
-    }))
+    setNewSpot((prev) => {
+      const removedUrl = prev.images[index]
+      if (removedUrl?.startsWith('blob:')) {
+        URL.revokeObjectURL(removedUrl)
+      }
+
+      return {
+        ...prev,
+        images: prev.images.filter((_, i) => i !== index),
+        imageFiles: prev.imageFiles.filter((_, i) => i !== index),
+      }
+    })
+  }
+
+  const toggleRoleSelection = (roles: string[], role: string) => {
+    if (roles.includes(role)) {
+      const next = roles.filter((r) => r !== role)
+      return next.length > 0 ? next : roles
+    }
+    return [...roles, role]
   }
 
   const uploadSpotImage = async (file: File) => {
@@ -707,6 +841,8 @@ export default function IntelMap() {
   }
 
   const saveNewSpot = async () => {
+    if (isSavingNewSpot) return
+
     if (!pendingPlacement) {
       alert('Click on the map first to place the spot.')
       return
@@ -717,8 +853,8 @@ export default function IntelMap() {
       return
     }
 
-    if (!newSpot.role.trim()) {
-      alert('Choose a role before saving.')
+    if (!newSpot.roles.length) {
+      alert('Choose at least one role before saving.')
       return
     }
 
@@ -727,79 +863,122 @@ export default function IntelMap() {
       return
     }
 
+    const placement = pendingPlacement
+    const primaryRole = newSpot.roles[0] || 'MG'
+
+    const spotDraft = {
+      ...newSpot,
+      title: newSpot.title.trim(),
+      notes: newSpot.notes.trim(),
+      youtube: newSpot.youtube.trim() || null,
+      roles: [...newSpot.roles],
+      images: [...newSpot.images],
+      imageFiles: [...newSpot.imageFiles],
+      role: primaryRole,
+      size: clampSpotSize(newSpot.size),
+    }
+
+    const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+
+    const optimisticSpot: Spot = {
+      id: tempId,
+      map_id: selectedMapId,
+      title: spotDraft.title,
+      role: primaryRole,
+      roles: spotDraft.roles,
+      side: spotDraft.side,
+      notes: spotDraft.notes,
+      youtube: spotDraft.youtube,
+      images: spotDraft.images,
+      x: placement.x,
+      y: placement.y,
+      size: spotDraft.size,
+      pending: true,
+    }
+
+    setIsSavingNewSpot(true)
+    addSpotToMaps(optimisticSpot)
+    setSelectedSpot(optimisticSpot)
+    setShowAddSpot(false)
+    setPendingPlacement(null)
+    setRightTab('details')
+    resetNewSpotState()
+
     try {
       const uploadedImageUrls = await Promise.all(
-        newSpot.imageFiles.map((file) => uploadSpotImage(file))
+        spotDraft.imageFiles.map((file) => uploadSpotImage(file))
       )
 
       const payload = {
         map_id: selectedMapId,
-        title: newSpot.title.trim(),
-        role: newSpot.role,
-        side: newSpot.side,
-        notes: newSpot.notes.trim(),
-        youtube: newSpot.youtube.trim() || null,
+        title: spotDraft.title,
+        role: primaryRole,
+        roles: spotDraft.roles,
+        side: spotDraft.side,
+        notes: spotDraft.notes,
+        youtube: spotDraft.youtube,
         images: uploadedImageUrls,
-        x: pendingPlacement.x,
-        y: pendingPlacement.y,
-        size: newSpot.size,
+        x: placement.x,
+        y: placement.y,
+        size: spotDraft.size,
       }
 
-      const { error } = await supabase.from('spots').insert(payload)
+      const { data, error } = await supabase
+        .from('spots')
+        .insert(payload)
+        .select()
+        .single()
 
       if (error) {
         console.error('Error saving spot:', JSON.stringify(error, null, 2))
-        alert(`Error saving spot: ${error.message || 'Unknown error'}`)
-        return
+        throw error
       }
 
-      setShowAddSpot(false)
-      setPendingPlacement(null)
-      setRightTab('details')
-      setNewSpot({
-        title: '',
-        role: 'MG',
-        side: 'Both',
-        notes: '',
-        youtube: '',
-        images: [],
-        imageFiles: [],
-        size: 20,
-      })
-
-      if (fileInputRef.current) fileInputRef.current.value = ''
+      const normalizedSavedSpot = normalizeSpot(data)
+      replaceSpotInMaps(tempId, normalizedSavedSpot)
+      setSelectedSpot(normalizedSavedSpot)
+      revokeNewSpotPreviewUrls(spotDraft.images)
     } catch (err: any) {
       console.error('Upload/save failure:', err)
+      removeSpotFromMaps(tempId)
+      setSelectedSpot((prev) => (prev?.id === tempId ? null : prev))
+      revokeNewSpotPreviewUrls(spotDraft.images)
       alert(err?.message || 'Failed to upload image or save spot.')
+    } finally {
+      setIsSavingNewSpot(false)
     }
   }
 
   const startEditingSpot = () => {
-    if (!selectedSpot) return
+    if (!selectedSpot || selectedSpot.pending || typeof selectedSpot.id !== 'number') return
+
     setEditingSpotId(selectedSpot.id)
     setEditSpot({
       title: selectedSpot.title,
-      role: selectedSpot.role,
+      roles: selectedSpot.roles?.length ? selectedSpot.roles : [selectedSpot.role || 'MG'],
       side: selectedSpot.side,
       notes: selectedSpot.notes,
       youtube: selectedSpot.youtube || '',
-      size: selectedSpot.size,
+      size: clampSpotSize(selectedSpot.size),
     })
     setRightTab('details')
   }
 
   const saveEditedSpot = async () => {
-    if (!selectedSpot) return
+    if (!selectedSpot || selectedSpot.pending || typeof selectedSpot.id !== 'number') return
+
+    const primaryRole = editSpot.roles[0] || 'MG'
 
     const { error } = await supabase
       .from('spots')
       .update({
         title: editSpot.title.trim(),
-        role: editSpot.role,
+        role: primaryRole,
+        roles: editSpot.roles,
         side: editSpot.side,
         notes: editSpot.notes.trim(),
         youtube: editSpot.youtube.trim() || null,
-        size: editSpot.size,
+        size: clampSpotSize(editSpot.size),
       })
       .eq('id', selectedSpot.id)
 
@@ -812,7 +991,7 @@ export default function IntelMap() {
   }
 
   const deleteSelectedSpot = async () => {
-    if (!selectedSpot) return
+    if (!selectedSpot || selectedSpot.pending || typeof selectedSpot.id !== 'number') return
 
     const { error } = await supabase
       .from('spots')
@@ -825,9 +1004,20 @@ export default function IntelMap() {
   }
 
   const updateSelectedSpotSize = async (newSize: number) => {
-    if (!selectedSpot) return
+    if (!selectedSpot || selectedSpot.pending || typeof selectedSpot.id !== 'number') return
+
+    newSize = clampSpotSize(newSize)
 
     setSelectedSpot((prev) => (prev ? { ...prev, size: newSize } : prev))
+
+    setMaps((prev) =>
+      prev.map((map) => ({
+        ...map,
+        spots: map.spots.map((spot) =>
+          spot.id === selectedSpot.id ? { ...spot, size: newSize } : spot
+        ),
+      }))
+    )
 
     const { error } = await supabase
       .from('spots')
@@ -839,8 +1029,53 @@ export default function IntelMap() {
     }
   }
 
+  // live preview while editing
+  const updateEditSpotSize = (newSize: number) => {
+    const clamped = clampSpotSize(newSize)
+
+    setEditSpot((prev) => ({
+      ...prev,
+      size: clamped,
+    }))
+
+    if (!selectedSpot) return
+
+    setSelectedSpot((prev) => (prev ? { ...prev, size: clamped } : prev))
+
+    setMaps((prev) =>
+      prev.map((map) => ({
+        ...map,
+        spots: map.spots.map((spot) =>
+          spot.id === selectedSpot.id ? { ...spot, size: clamped } : spot
+        ),
+      }))
+    )
+  }
+
+  const cancelEditSpot = () => {
+    if (selectedSpot && typeof selectedSpot.id === 'number') {
+      const currentMap = maps.find((map) => map.id === selectedMapId)
+      const originalSpot = currentMap?.spots.find((spot) => spot.id === selectedSpot.id) || null
+      if (originalSpot) {
+        setSelectedSpot(originalSpot)
+      }
+    }
+
+    setEditingSpotId(null)
+  }
+
   const openAddSpot = () => {
-    setShowAddSpot((prev) => !prev)
+    if (showAddSpot) {
+      revokeNewSpotPreviewUrls(newSpot.images)
+      resetNewSpotState()
+      setPendingPlacement(null)
+      setShowAddSpot(false)
+      setEditingSpotId(null)
+      setRightTab('details')
+      return
+    }
+
+    setShowAddSpot(true)
     setEditingSpotId(null)
     setRightTab('details')
     setPendingPlacement(null)
@@ -1075,8 +1310,11 @@ export default function IntelMap() {
 
                     {filteredSpots.map((spot) => {
                       const isActive = selectedSpot?.id === spot.id
-                      const outerSize = `${spot.size}px`
                       const sideStyles = getSideClasses(spot.side)
+                      const primaryRole = spot.roles?.[0] || spot.role || 'MG'
+                      const shape = getRoleShape(primaryRole)
+                      const renderedSize = getRenderedSpotSize(spot)
+                      const outerSize = `${renderedSize}px`
 
                       return (
                         <button
@@ -1086,14 +1324,18 @@ export default function IntelMap() {
                             selectSpot(spot)
                           }}
                           className="group absolute -translate-x-1/2 -translate-y-1/2"
-                          style={{ left: `${spot.x}%`, top: `${spot.y}%` }}
+                          style={{
+                            left: `${spot.x}%`,
+                            top: `${spot.y}%`,
+                            opacity: spot.pending ? 0.68 : 1,
+                          }}
                           aria-label={spot.title}
                         >
                           <span
                             className={`absolute inset-0 blur-sm opacity-70 ${sideStyles.glow} ${
-                              getRoleShape(spot.role) === 'circle'
+                              shape === 'circle'
                                 ? 'rounded-full'
-                                : getRoleShape(spot.role) === 'square'
+                                : shape === 'square'
                                 ? 'rounded-[6px]'
                                 : ''
                             }`}
@@ -1101,19 +1343,24 @@ export default function IntelMap() {
                               width: outerSize,
                               height: outerSize,
                               clipPath:
-                                getRoleShape(spot.role) === 'triangle'
+                                shape === 'triangle'
                                   ? 'polygon(50% 6%, 8% 92%, 92% 92%)'
                                   : undefined,
                             }}
                           />
                           <ShapeMarker
-                            shape={getRoleShape(spot.role)}
-                            sideClass={sideStyles.marker}
-                            borderClass={sideStyles.border}
-                            icon={getRoleIcon(spot.role)}
-                            size={spot.size}
+                            shape={shape}
+                            sideClass={spot.pending ? 'bg-emerald-500/90' : sideStyles.marker}
+                            borderClass={spot.pending ? 'border-emerald-200' : sideStyles.border}
+                            icon={getRoleIcon(primaryRole)}
+                            size={renderedSize}
                             isActive={isActive}
                           />
+                          {spot.pending && (
+                            <span className="pointer-events-none absolute left-1/2 top-full mt-1 -translate-x-1/2 whitespace-nowrap rounded-full border border-emerald-300/20 bg-emerald-950/90 px-2 py-0.5 text-[10px] uppercase tracking-[0.18em] text-emerald-100">
+                              Saving
+                            </span>
+                          )}
                         </button>
                       )
                     })}
@@ -1127,11 +1374,11 @@ export default function IntelMap() {
                         }}
                       >
                         <ShapeMarker
-                          shape={getRoleShape(newSpot.role)}
+                          shape={getRoleShape(newSpot.roles?.[0] || 'MG')}
                           sideClass="bg-emerald-600/90"
                           borderClass="border-emerald-300"
-                          icon={getRoleIcon(newSpot.role)}
-                          size={newSpot.size}
+                          icon={getRoleIcon(newSpot.roles?.[0] || 'MG')}
+                          size={getRenderedDraftSize(newSpot.roles, clampSpotSize(newSpot.size))}
                           isActive={false}
                         />
                       </div>
@@ -1180,7 +1427,9 @@ export default function IntelMap() {
                     : editingSpotId
                     ? 'Editing'
                     : selectedSpot
-                    ? 'Selected'
+                    ? selectedSpot.pending
+                      ? 'Saving'
+                      : 'Selected'
                     : 'Idle'}
                 </span>
               </div>
@@ -1190,6 +1439,8 @@ export default function IntelMap() {
                   {sortedSpots.length > 0 ? (
                     sortedSpots.map((spot) => {
                       const sideStyles = getSideClasses(spot.side)
+                      const primaryRole = spot.roles?.[0] || spot.role || 'MG'
+                      const listSize = Math.max(12, getRenderedSpotSize(spot))
 
                       return (
                         <button
@@ -1199,23 +1450,28 @@ export default function IntelMap() {
                             selectedSpot?.id === spot.id
                               ? 'border-emerald-300/35 bg-emerald-500/10'
                               : 'border-emerald-400/8 bg-emerald-950/18 hover:bg-emerald-900/30'
-                          }`}
+                          } ${spot.pending ? 'opacity-75' : ''}`}
                         >
                           <div className="flex items-center gap-2">
                             <span className="inline-flex h-8 w-8 items-center justify-center">
                               <ShapeMarker
-                                shape={getRoleShape(spot.role)}
-                                sideClass={sideStyles.marker}
-                                borderClass={sideStyles.border}
-                                icon={getRoleIcon(spot.role)}
-                                size={24}
+                                shape={getRoleShape(primaryRole)}
+                                sideClass={spot.pending ? 'bg-emerald-500/90' : sideStyles.marker}
+                                borderClass={spot.pending ? 'border-emerald-200' : sideStyles.border}
+                                icon={getRoleIcon(primaryRole)}
+                                size={listSize}
                                 isActive={selectedSpot?.id === spot.id}
                               />
                             </span>
                             <span className="font-medium text-white">{spot.title}</span>
+                            {spot.pending && (
+                              <span className="rounded-full border border-emerald-300/20 bg-emerald-950/70 px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-emerald-100">
+                                Saving
+                              </span>
+                            )}
                           </div>
                           <div className="mt-2 flex items-center gap-2 text-[11px] uppercase tracking-[0.2em] text-zinc-500">
-                            <span>{spot.role}</span>
+                            <span>{spot.roles.join(', ')}</span>
                             <span>•</span>
                             <span>{spot.side}</span>
                           </div>
@@ -1243,17 +1499,39 @@ export default function IntelMap() {
                     className={inputClass}
                   />
 
-                  <select
-                    value={newSpot.role}
-                    onChange={(e) =>
-                      setNewSpot((prev) => ({ ...prev, role: e.target.value }))
-                    }
-                    className={inputClass}
-                  >
-                    {roleNames.map((role) => (
-                      <option key={role}>{role}</option>
-                    ))}
-                  </select>
+                  <div className="rounded-[22px] border border-emerald-400/10 bg-emerald-950/18 p-3">
+                    <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">
+                      Roles
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      {roleNames.map((role) => {
+                        const checked = newSpot.roles.includes(role)
+                        return (
+                          <label
+                            key={role}
+                            className={`flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2 text-sm transition ${
+                              checked
+                                ? 'border-emerald-300/35 bg-emerald-600/20 text-white'
+                                : 'border-emerald-300/10 bg-emerald-950/20 text-zinc-300 hover:bg-emerald-900/30'
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() =>
+                                setNewSpot((prev) => ({
+                                  ...prev,
+                                  roles: toggleRoleSelection(prev.roles, role),
+                                }))
+                              }
+                              className="accent-emerald-500"
+                            />
+                            <span>{role}</span>
+                          </label>
+                        )
+                      })}
+                    </div>
+                  </div>
 
                   <select
                     value={newSpot.side}
@@ -1277,18 +1555,18 @@ export default function IntelMap() {
                     <div className="flex items-center gap-2 rounded-2xl border border-emerald-400/10 bg-emerald-950/25 px-3 py-2">
                       <input
                         type="range"
-                        min="18"
-                        max="34"
-                        value={newSpot.size}
+                        min="8"
+                        max="20"
+                        value={clampSpotSize(newSpot.size)}
                         onChange={(e) =>
                           setNewSpot((prev) => ({
                             ...prev,
-                            size: Number(e.target.value),
+                            size: clampSpotSize(Number(e.target.value)),
                           }))
                         }
                         className="w-full accent-emerald-500"
                       />
-                      <span className="w-8 text-xs text-zinc-300">{newSpot.size}</span>
+                      <span className="w-8 text-xs text-zinc-300">{clampSpotSize(newSpot.size)}</span>
                     </div>
                   </div>
 
@@ -1360,20 +1638,19 @@ export default function IntelMap() {
                   </div>
 
                   <div className="mt-2 flex gap-2">
-                    <button onClick={saveNewSpot} className={buttonClass}>
-                      Save Spot
+                    <button
+                      onClick={saveNewSpot}
+                      disabled={isSavingNewSpot}
+                      className={`${buttonClass} ${isSavingNewSpot ? 'cursor-not-allowed opacity-70' : ''}`}
+                    >
+                      {isSavingNewSpot ? 'Saving...' : 'Save Spot'}
                     </button>
                     <button
                       onClick={() => {
+                        revokeNewSpotPreviewUrls(newSpot.images)
                         setPendingPlacement(null)
                         setShowAddSpot(false)
-                        setNewSpot((prev) => ({
-                          ...prev,
-                          images: [],
-                          imageFiles: [],
-                          size: 20,
-                          side: 'Both',
-                        }))
+                        resetNewSpotState()
                       }}
                       className={softButtonClass}
                     >
@@ -1392,17 +1669,39 @@ export default function IntelMap() {
                     className={inputClass}
                   />
 
-                  <select
-                    value={editSpot.role}
-                    onChange={(e) =>
-                      setEditSpot((prev) => ({ ...prev, role: e.target.value }))
-                    }
-                    className={inputClass}
-                  >
-                    {roleNames.map((role) => (
-                      <option key={role}>{role}</option>
-                    ))}
-                  </select>
+                  <div className="rounded-[22px] border border-emerald-400/10 bg-emerald-950/18 p-3">
+                    <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">
+                      Roles
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      {roleNames.map((role) => {
+                        const checked = editSpot.roles.includes(role)
+                        return (
+                          <label
+                            key={role}
+                            className={`flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2 text-sm transition ${
+                              checked
+                                ? 'border-emerald-300/35 bg-emerald-600/20 text-white'
+                                : 'border-emerald-300/10 bg-emerald-950/20 text-zinc-300 hover:bg-emerald-900/30'
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() =>
+                                setEditSpot((prev) => ({
+                                  ...prev,
+                                  roles: toggleRoleSelection(prev.roles, role),
+                                }))
+                              }
+                              className="accent-emerald-500"
+                            />
+                            <span>{role}</span>
+                          </label>
+                        )
+                      })}
+                    </div>
+                  </div>
 
                   <select
                     value={editSpot.side}
@@ -1426,18 +1725,13 @@ export default function IntelMap() {
                     <div className="flex items-center gap-2 rounded-2xl border border-emerald-400/10 bg-emerald-950/25 px-3 py-2">
                       <input
                         type="range"
-                        min="18"
-                        max="34"
-                        value={editSpot.size}
-                        onChange={(e) =>
-                          setEditSpot((prev) => ({
-                            ...prev,
-                            size: Number(e.target.value),
-                          }))
-                        }
+                        min="8"
+                        max="20"
+                        value={clampSpotSize(editSpot.size)}
+                        onChange={(e) => updateEditSpotSize(Number(e.target.value))}
                         className="w-full accent-emerald-500"
                       />
-                      <span className="w-8 text-xs text-zinc-300">{editSpot.size}</span>
+                      <span className="w-8 text-xs text-zinc-300">{clampSpotSize(editSpot.size)}</span>
                     </div>
                   </div>
 
@@ -1463,7 +1757,7 @@ export default function IntelMap() {
                     <button onClick={saveEditedSpot} className={buttonClass}>
                       Save Changes
                     </button>
-                    <button onClick={() => setEditingSpotId(null)} className={softButtonClass}>
+                    <button onClick={cancelEditSpot} className={softButtonClass}>
                       Cancel
                     </button>
                   </div>
@@ -1500,13 +1794,14 @@ export default function IntelMap() {
                   )}
 
                   <div className="mt-4 flex flex-wrap items-center gap-2 text-xs uppercase tracking-[0.2em] text-zinc-400">
-                    <span
-                      className={`rounded-full px-3 py-1 text-white ${getRoleColor(
-                        selectedSpot.role
-                      )}`}
-                    >
-                      {selectedSpot.role}
-                    </span>
+                    {selectedSpot.roles.map((role) => (
+                      <span
+                        key={role}
+                        className={`rounded-full px-3 py-1 text-white ${getRoleColor(role)}`}
+                      >
+                        {role}
+                      </span>
+                    ))}
 
                     <span
                       className={`rounded-full px-3 py-1 ${getSideClasses(
@@ -1517,8 +1812,14 @@ export default function IntelMap() {
                     </span>
 
                     <span className="inline-flex items-center rounded-full bg-emerald-900/45 px-3 py-1 text-white normal-case tracking-normal">
-                      <MarkerIcon icon={getRoleIcon(selectedSpot.role)} sizePx={16} />
+                      <MarkerIcon icon={getRoleIcon(selectedSpot.roles?.[0] || selectedSpot.role || 'MG')} sizePx={16} />
                     </span>
+
+                    {selectedSpot.pending && (
+                      <span className="rounded-full border border-emerald-300/20 bg-emerald-950/70 px-3 py-1 text-emerald-100">
+                        Saving...
+                      </span>
+                    )}
                   </div>
 
                   <h3 className="mt-4 text-2xl font-bold text-white">{selectedSpot.title}</h3>
@@ -1526,24 +1827,26 @@ export default function IntelMap() {
                     {selectedSpot.notes}
                   </p>
 
-                  <div className="mt-4">
-                    <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">
-                      Selected Spot Size
-                    </label>
-                    <div className="flex items-center gap-2 rounded-2xl border border-emerald-400/10 bg-emerald-950/25 px-3 py-2">
-                      <input
-                        type="range"
-                        min="18"
-                        max="34"
-                        value={selectedSpot.size}
-                        onChange={(e) =>
-                          updateSelectedSpotSize(Number(e.target.value))
-                        }
-                        className="w-full accent-emerald-500"
-                      />
-                      <span className="w-8 text-xs text-zinc-300">{selectedSpot.size}</span>
+                  {!selectedSpot.pending && (
+                    <div className="mt-4">
+                      <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">
+                        Selected Spot Size
+                      </label>
+                      <div className="flex items-center gap-2 rounded-2xl border border-emerald-400/10 bg-emerald-950/25 px-3 py-2">
+                        <input
+                          type="range"
+                          min="8"
+                          max="20"
+                          value={clampSpotSize(selectedSpot.size)}
+                          onChange={(e) =>
+                            updateSelectedSpotSize(Number(e.target.value))
+                          }
+                          className="w-full accent-emerald-500"
+                        />
+                        <span className="w-8 text-xs text-zinc-300">{clampSpotSize(selectedSpot.size)}</span>
+                      </div>
                     </div>
-                  </div>
+                  )}
 
                   {selectedSpotEmbedUrl && (
                     <div className="mt-5">
@@ -1572,13 +1875,20 @@ export default function IntelMap() {
                   )}
 
                   <div className="mt-4 flex gap-2">
-                    <button onClick={startEditingSpot} className={softButtonClass}>
+                    <button
+                      onClick={startEditingSpot}
+                      disabled={!!selectedSpot.pending}
+                      className={`${softButtonClass} ${selectedSpot.pending ? 'cursor-not-allowed opacity-60' : ''}`}
+                    >
                       Edit Spot
                     </button>
 
                     <button
                       onClick={deleteSelectedSpot}
-                      className="inline-flex w-fit items-center rounded-2xl border border-red-700 bg-red-900/60 px-4 py-2 text-sm font-medium hover:bg-red-800/70"
+                      disabled={!!selectedSpot.pending}
+                      className={`inline-flex w-fit items-center rounded-2xl border border-red-700 bg-red-900/60 px-4 py-2 text-sm font-medium hover:bg-red-800/70 ${
+                        selectedSpot.pending ? 'cursor-not-allowed opacity-60' : ''
+                      }`}
                     >
                       Delete Spot
                     </button>
