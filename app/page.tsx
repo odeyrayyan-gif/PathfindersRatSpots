@@ -1,12 +1,18 @@
 'use client'
+
 import React from 'react'
 import { supabase } from '@/lib/supabase'
+
+type SpotSide = 'Axis' | 'Allies' | 'Both'
+type RightTab = 'list' | 'details'
+type MarkerShape = 'circle' | 'square' | 'triangle'
 
 type Spot = {
   id: number
   map_id: string
   title: string
   role: string
+  side: SpotSide
   x: number
   y: number
   notes: string
@@ -24,23 +30,82 @@ type MapData = {
   spots: Spot[]
 }
 
-const defaultRoleColors: Record<string, string> = {
-  MG: 'bg-red-500',
-  Infantry: 'bg-green-500',
-  Tank: 'bg-yellow-500',
-  Sniper: 'bg-purple-500',
+const FIXED_ROLES = [
+  { name: 'MG', icon: '/icons/hll/machine-gunner.png', color: 'bg-red-500', shape: 'circle' as MarkerShape },
+  { name: 'Infantry', icon: '/icons/hll/rifleman.png', color: 'bg-green-500', shape: 'circle' as MarkerShape },
+  { name: 'Tank', icon: '/icons/hll/tank.png', color: 'bg-yellow-500', shape: 'square' as MarkerShape },
+  { name: 'Truck', icon: '/icons/hll/truck.png', color: 'bg-blue-500', shape: 'square' as MarkerShape },
+  { name: 'Sniper', icon: '/icons/hll/sniper.png', color: 'bg-purple-500', shape: 'circle' as MarkerShape },
+  { name: 'Anti-Tank', icon: '/icons/hll/anti-tank.png', color: 'bg-orange-500', shape: 'circle' as MarkerShape },
+  { name: 'Anti-Tank Gun', icon: '/icons/hll/anti-tank-gun.png', color: 'bg-slate-400', shape: 'triangle' as MarkerShape },
+] as const
+
+function normalizeSide(side: unknown): SpotSide {
+  const value = String(side ?? '').toLowerCase()
+  if (value === 'axis') return 'Axis'
+  if (value === 'allies') return 'Allies'
+  return 'Both'
 }
 
-const fallbackColorClasses = [
-  'bg-sky-500',
-  'bg-pink-500',
-  'bg-orange-500',
-  'bg-emerald-500',
-  'bg-cyan-500',
-  'bg-lime-500',
-  'bg-fuchsia-500',
-  'bg-amber-500',
-]
+function parseIcon(icon?: string | null) {
+  const trimmed = icon?.trim()
+
+  if (!trimmed) {
+    return { type: 'emoji' as const, value: '📍' }
+  }
+
+  const discordMatch = trimmed.match(/^<a?:\w+:(\d+)>$/)
+  if (discordMatch) {
+    const id = discordMatch[1]
+    return {
+      type: 'image' as const,
+      value: `https://cdn.discordapp.com/emojis/${id}.png`,
+    }
+  }
+
+  if (
+    trimmed.startsWith('http://') ||
+    trimmed.startsWith('https://') ||
+    trimmed.startsWith('/')
+  ) {
+    return {
+      type: 'image' as const,
+      value: trimmed,
+    }
+  }
+
+  return {
+    type: 'emoji' as const,
+    value: trimmed,
+  }
+}
+
+function getSideClasses(side: SpotSide) {
+  if (side === 'Axis') {
+    return {
+      marker: 'bg-red-600/95',
+      glow: 'bg-red-500',
+      badge: 'bg-red-700/90 text-white border border-red-300/40',
+      border: 'border-red-300',
+    }
+  }
+
+  if (side === 'Allies') {
+    return {
+      marker: 'bg-blue-600/95',
+      glow: 'bg-blue-500',
+      badge: 'bg-blue-700/90 text-white border border-blue-300/40',
+      border: 'border-blue-300',
+    }
+  }
+
+  return {
+    marker: 'bg-violet-600/95',
+    glow: 'bg-violet-500',
+    badge: 'bg-violet-700/90 text-white border border-violet-300/40',
+    border: 'border-violet-300',
+  }
+}
 
 function getYouTubeEmbedUrl(url?: string | null) {
   if (!url) return null
@@ -79,12 +144,13 @@ function normalizeSpot(raw: any): Spot {
     map_id: raw.map_id,
     title: raw.title ?? '',
     role: raw.role ?? 'MG',
+    side: normalizeSide(raw.side),
     x: Number(raw.x ?? 0),
     y: Number(raw.y ?? 0),
     notes: raw.notes ?? '',
     youtube: raw.youtube ?? null,
     images: Array.isArray(raw.images) ? raw.images : [],
-    size: Number(raw.size ?? 14),
+    size: Number(raw.size ?? 20),
     created_at: raw.created_at,
   }
 }
@@ -101,28 +167,146 @@ function buildMapsWithSpots(mapsData: any[], spotsData: any[]): MapData[] {
   }))
 }
 
+function MarkerIcon({
+  icon,
+  className = '',
+  sizePx = 16,
+}: {
+  icon?: string | null
+  className?: string
+  sizePx?: number
+}) {
+  const parsed = parseIcon(icon || '📍')
+
+  if (parsed.type === 'image') {
+    return (
+      <img
+        src={parsed.value}
+        alt="icon"
+        className={`object-contain ${className}`}
+        style={{ width: sizePx, height: sizePx }}
+        onError={(e) => {
+          const target = e.currentTarget
+          target.style.display = 'none'
+        }}
+      />
+    )
+  }
+
+  return (
+    <span
+      className={`flex items-center justify-center text-white leading-none ${className}`}
+      style={{
+        fontSize: `${sizePx}px`,
+        width: `${sizePx}px`,
+        height: `${sizePx}px`,
+      }}
+    >
+      {parsed.value}
+    </span>
+  )
+}
+
+function ShapeMarker({
+  shape,
+  sideClass,
+  borderClass,
+  icon,
+  size,
+  isActive,
+}: {
+  shape: MarkerShape
+  sideClass: string
+  borderClass: string
+  icon: string
+  size: number
+  isActive: boolean
+}) {
+  const common =
+    `relative flex items-center justify-center border-2 ${sideClass} ${borderClass} shadow-[0_10px_25px_rgba(0,0,0,0.35)] ` +
+    (isActive ? 'scale-125' : 'group-hover:scale-110')
+
+  if (shape === 'square') {
+    return (
+      <span
+        className={`${common} rounded-[6px]`}
+        style={{ width: `${size}px`, height: `${size}px` }}
+      >
+        <MarkerIcon icon={icon} sizePx={Math.max(8, Math.round(size * 0.5))} />
+      </span>
+    )
+  }
+
+  if (shape === 'triangle') {
+    return (
+      <span
+        className={`relative flex items-center justify-center ${isActive ? 'scale-125' : 'group-hover:scale-110'}`}
+        style={{ width: `${size}px`, height: `${size}px` }}
+      >
+        <span
+          className={`absolute inset-0`}
+          style={{
+            clipPath: 'polygon(50% 6%, 8% 92%, 92% 92%)',
+            background: 'rgba(100,100,100,0)',
+          }}
+        />
+        <span
+          className="absolute inset-0"
+          style={{
+            clipPath: 'polygon(50% 6%, 8% 92%, 92% 92%)',
+          }}
+        >
+          <span className={`absolute inset-0 ${sideClass}`} />
+          <span
+            className={`absolute inset-0 border-2 ${borderClass}`}
+            style={{ clipPath: 'polygon(50% 6%, 8% 92%, 92% 92%)' }}
+          />
+        </span>
+        <span className="relative mt-1">
+          <MarkerIcon icon={icon} sizePx={Math.max(8, Math.round(size * 0.42))} />
+        </span>
+      </span>
+    )
+  }
+
+  return (
+    <span
+      className={`${common} rounded-full`}
+      style={{ width: `${size}px`, height: `${size}px` }}
+    >
+      <MarkerIcon icon={icon} sizePx={Math.max(8, Math.round(size * 0.5))} />
+    </span>
+  )
+}
+
+const panelClass =
+  'rounded-3xl border border-emerald-400/15 bg-[linear-gradient(180deg,rgba(18,52,29,0.84),rgba(11,28,16,0.9))] shadow-[0_20px_60px_rgba(0,0,0,0.42)] backdrop-blur-xl'
+
+const inputClass =
+  'w-full rounded-2xl border border-emerald-300/15 bg-emerald-950/35 px-3 py-2.5 text-sm text-white outline-none transition placeholder:text-emerald-100/30 focus:border-emerald-300/50 focus:bg-emerald-950/50'
+
+const buttonClass =
+  'rounded-2xl border border-emerald-300/25 bg-emerald-600/90 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-emerald-500 hover:border-emerald-200/40'
+
+const softButtonClass =
+  'rounded-2xl border border-emerald-300/15 bg-emerald-900/40 px-4 py-2.5 text-sm font-medium text-emerald-50 transition hover:bg-emerald-800/55'
+
+const tabButtonClass =
+  'rounded-2xl px-4 py-2 text-sm font-medium transition'
+
 export default function IntelMap() {
-  const [roles, setRoles] = React.useState<string[]>([
-    'MG',
-    'Infantry',
-    'Tank',
-    'Sniper',
-  ])
-
-  const [roleColors, setRoleColors] =
-    React.useState<Record<string, string>>(defaultRoleColors)
-
   const [maps, setMaps] = React.useState<MapData[]>([])
   const [selectedMapId, setSelectedMapId] = React.useState<string>('utah')
   const [selectedSpot, setSelectedSpot] = React.useState<Spot | null>(null)
+  const [editingSpotId, setEditingSpotId] = React.useState<number | null>(null)
+  const [rightTab, setRightTab] = React.useState<RightTab>('list')
 
   const [roleFilter, setRoleFilter] = React.useState<string>('All')
   const [sortMode, setSortMode] = React.useState<'alphabetical' | 'role'>(
     'alphabetical'
   )
   const [searchTerm, setSearchTerm] = React.useState('')
-  const [showSpotList, setShowSpotList] = React.useState(true)
-  const [showSpotCard, setShowSpotCard] = React.useState(true)
+  const [showAddSpot, setShowAddSpot] = React.useState(false)
 
   const [scale, setScale] = React.useState(1)
   const [position, setPosition] = React.useState({ x: 0, y: 0 })
@@ -132,8 +316,6 @@ export default function IntelMap() {
   const [overlayOpacity, setOverlayOpacity] = React.useState(55)
   const [overlayBroken, setOverlayBroken] = React.useState<Record<string, boolean>>({})
 
-  const [newRoleName, setNewRoleName] = React.useState('')
-  const [showAddSpot, setShowAddSpot] = React.useState(false)
   const [pendingPlacement, setPendingPlacement] = React.useState<{
     x: number
     y: number
@@ -144,10 +326,20 @@ export default function IntelMap() {
   const [newSpot, setNewSpot] = React.useState({
     title: '',
     role: 'MG',
+    side: 'Both' as SpotSide,
     notes: '',
     youtube: '',
     images: [] as string[],
-    size: 14,
+    size: 20,
+  })
+
+  const [editSpot, setEditSpot] = React.useState({
+    title: '',
+    role: 'MG',
+    side: 'Both' as SpotSide,
+    notes: '',
+    youtube: '',
+    size: 20,
   })
 
   const viewportRef = React.useRef<HTMLDivElement | null>(null)
@@ -170,6 +362,20 @@ export default function IntelMap() {
   const currentSpots = selectedMap?.spots || []
   const selectedSpotEmbedUrl = getYouTubeEmbedUrl(selectedSpot?.youtube)
 
+  const roleNames = FIXED_ROLES.map((r) => r.name)
+
+  const getRoleColor = (role: string) => {
+    return FIXED_ROLES.find((r) => r.name === role)?.color || 'bg-emerald-500'
+  }
+
+  const getRoleIcon = (roleName: string) => {
+    return FIXED_ROLES.find((r) => r.name === roleName)?.icon || '📍'
+  }
+
+  const getRoleShape = (roleName: string): MarkerShape => {
+    return FIXED_ROLES.find((r) => r.name === roleName)?.shape || 'circle'
+  }
+
   const filteredSpots = currentSpots.filter((spot) => {
     const roleMatch = roleFilter === 'All' || spot.role === roleFilter
     const search = searchTerm.trim().toLowerCase()
@@ -178,7 +384,8 @@ export default function IntelMap() {
       search === '' ||
       spot.title.toLowerCase().includes(search) ||
       spot.role.toLowerCase().includes(search) ||
-      spot.notes.toLowerCase().includes(search)
+      spot.notes.toLowerCase().includes(search) ||
+      spot.side.toLowerCase().includes(search)
 
     return roleMatch && textMatch
   })
@@ -190,11 +397,6 @@ export default function IntelMap() {
     }
     return a.title.localeCompare(b.title)
   })
-
-  const getRoleColor = (role: string) => {
-    if (roleColors[role]) return roleColors[role]
-    return fallbackColorClasses[0]
-  }
 
   const clampPosition = React.useCallback(
     (x: number, y: number, incomingScale = scale) => {
@@ -217,11 +419,13 @@ export default function IntelMap() {
     async function loadData() {
       setIsLoading(true)
 
-      const [{ data: mapsData, error: mapsError }, { data: spotsData, error: spotsError }] =
-        await Promise.all([
-          supabase.from('maps').select('*').order('name', { ascending: true }),
-          supabase.from('spots').select('*').order('id', { ascending: true }),
-        ])
+      const [
+        { data: mapsData, error: mapsError },
+        { data: spotsData, error: spotsError },
+      ] = await Promise.all([
+        supabase.from('maps').select('*').order('name', { ascending: true }),
+        supabase.from('spots').select('*').order('id', { ascending: true }),
+      ])
 
       if (mapsError) console.error('Error loading maps:', mapsError)
       if (spotsError) console.error('Error loading spots:', spotsError)
@@ -324,6 +528,8 @@ export default function IntelMap() {
     setShowAddSpot(false)
     setPendingPlacement(null)
     setShowSatellite(false)
+    setEditingSpotId(null)
+    setRightTab('list')
   }, [selectedMapId, maps])
 
   React.useEffect(() => {
@@ -389,7 +595,7 @@ export default function IntelMap() {
       el.removeEventListener('wheel', handleWheel)
       document.body.style.overflow = previousOverflow
     }
-  }, [])
+  }, [scale, clampPosition])
 
   const zoomIn = () => setScale((prev) => Math.min(prev + 0.2, 3))
 
@@ -430,23 +636,6 @@ export default function IntelMap() {
   }
 
   const stopDragging = () => setIsDragging(false)
-
-  const addRole = () => {
-    const trimmed = newRoleName.trim()
-    if (!trimmed) return
-    if (roles.includes(trimmed)) {
-      setNewRoleName('')
-      return
-    }
-
-    const nextColor =
-      fallbackColorClasses[roles.length % fallbackColorClasses.length]
-
-    setRoles((prev) => [...prev, trimmed])
-    setRoleColors((prev) => ({ ...prev, [trimmed]: nextColor }))
-    setNewRoleName('')
-    setNewSpot((prev) => ({ ...prev, role: trimmed }))
-  }
 
   const handleMapClickForPlacement = (
     e: React.MouseEvent<HTMLDivElement>
@@ -521,6 +710,7 @@ export default function IntelMap() {
       map_id: selectedMapId,
       title: newSpot.title.trim(),
       role: newSpot.role,
+      side: newSpot.side,
       notes: newSpot.notes.trim(),
       youtube: newSpot.youtube.trim() || null,
       images: newSpot.images,
@@ -536,18 +726,56 @@ export default function IntelMap() {
       return
     }
 
-    setShowSpotCard(true)
     setShowAddSpot(false)
     setPendingPlacement(null)
+    setRightTab('details')
     setNewSpot({
       title: '',
-      role: roles[0] || 'MG',
+      role: 'MG',
+      side: 'Both',
       notes: '',
       youtube: '',
       images: [],
-      size: 14,
+      size: 20,
     })
     if (fileInputRef.current) fileInputRef.current.value = ''
+  }
+
+  const startEditingSpot = () => {
+    if (!selectedSpot) return
+    setEditingSpotId(selectedSpot.id)
+    setEditSpot({
+      title: selectedSpot.title,
+      role: selectedSpot.role,
+      side: selectedSpot.side,
+      notes: selectedSpot.notes,
+      youtube: selectedSpot.youtube || '',
+      size: selectedSpot.size,
+    })
+    setRightTab('details')
+  }
+
+  const saveEditedSpot = async () => {
+    if (!selectedSpot) return
+
+    const { error } = await supabase
+      .from('spots')
+      .update({
+        title: editSpot.title.trim(),
+        role: editSpot.role,
+        side: editSpot.side,
+        notes: editSpot.notes.trim(),
+        youtube: editSpot.youtube.trim() || null,
+        size: editSpot.size,
+      })
+      .eq('id', selectedSpot.id)
+
+    if (error) {
+      console.error('Error updating spot:', error)
+      return
+    }
+
+    setEditingSpotId(null)
   }
 
   const deleteSelectedSpot = async () => {
@@ -578,47 +806,42 @@ export default function IntelMap() {
     }
   }
 
-  const gridClass =
-    showSpotList && showSpotCard
-      ? 'xl:grid-cols-[1.65fr_220px_340px]'
-      : showSpotList && !showSpotCard
-      ? 'xl:grid-cols-[1.9fr_220px]'
-      : !showSpotList && showSpotCard
-      ? 'xl:grid-cols-[1.95fr_340px]'
-      : 'xl:grid-cols-[1fr]'
+  const openAddSpot = () => {
+    setShowAddSpot((prev) => !prev)
+    setEditingSpotId(null)
+    setRightTab('details')
+    setPendingPlacement(null)
+  }
+
+  const selectSpot = (spot: Spot) => {
+    setSelectedSpot(spot)
+    setShowAddSpot(false)
+    setEditingSpotId(null)
+    setRightTab('details')
+  }
 
   return (
-    <div className="min-h-screen bg-zinc-950 p-4 text-white md:p-6">
-      <div className="mb-5 flex flex-col gap-4">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <p className="text-sm uppercase tracking-[0.25em] text-zinc-400">
-              Phase 1 Prototype
-            </p>
-            <h1 className="text-3xl font-bold tracking-tight md:text-5xl">
-              Pathfinders RatSpots
-            </h1>
-          </div>
-
-          <div className="flex gap-2">
-            <a
-              href="/admin"
-              className="rounded-2xl border border-zinc-700 bg-zinc-800 px-4 py-2 text-sm font-medium hover:bg-zinc-700"
-            >
-              Admin Panel
-            </a>
+    <div className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(16,185,129,0.14),transparent_32%),linear-gradient(180deg,#060906_0%,#0a0f0b_100%)] text-white">
+      <div className="mx-auto max-w-[1800px] px-4 pb-6 pt-3 md:px-6">
+        <div className="sticky top-0 z-40 mb-4 overflow-hidden rounded-[28px] border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.92),rgba(8,20,12,0.88))] shadow-[0_20px_60px_rgba(0,0,0,0.45)] backdrop-blur-xl">
+          <div className="flex items-center justify-center px-4 py-3 md:py-4">
+            <img
+              src="/pathfinders-logo.png"
+              alt="Pathfinders"
+              className="max-h-[65px] w-auto object-contain md:max-h-[85px]"
+            />
           </div>
         </div>
 
-        <div className="flex flex-wrap items-end gap-3">
+        <div className="sticky top-[94px] z-30 mb-4 grid gap-3 rounded-[28px] border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.92),rgba(8,20,12,0.88))] p-4 shadow-[0_20px_60px_rgba(0,0,0,0.45)] backdrop-blur-xl md:grid-cols-2 xl:grid-cols-6">
           <div>
-            <label className="mb-1 block text-xs uppercase tracking-widest text-zinc-500">
+            <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">
               Map
             </label>
             <select
               value={selectedMapId}
               onChange={(e) => setSelectedMapId(e.target.value)}
-              className="w-56 rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none"
+              className={inputClass}
             >
               {maps.map((map) => (
                 <option key={map.id} value={map.id}>
@@ -629,35 +852,35 @@ export default function IntelMap() {
           </div>
 
           <div>
-            <label className="mb-1 block text-xs uppercase tracking-widest text-zinc-500">
+            <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">
               Search Spots
             </label>
             <input
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               placeholder="Search bunker, flank, sniper..."
-              className="w-64 rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none"
+              className={inputClass}
             />
           </div>
 
           <div>
-            <label className="mb-1 block text-xs uppercase tracking-widest text-zinc-500">
+            <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">
               Role Filter
             </label>
             <select
               value={roleFilter}
               onChange={(e) => setRoleFilter(e.target.value)}
-              className="rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none"
+              className={inputClass}
             >
               <option>All</option>
-              {roles.map((role) => (
+              {roleNames.map((role) => (
                 <option key={role}>{role}</option>
               ))}
             </select>
           </div>
 
           <div>
-            <label className="mb-1 block text-xs uppercase tracking-widest text-zinc-500">
+            <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">
               Sort List
             </label>
             <select
@@ -665,124 +888,104 @@ export default function IntelMap() {
               onChange={(e) =>
                 setSortMode(e.target.value as 'alphabetical' | 'role')
               }
-              className="rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none"
+              className={inputClass}
             >
               <option value="alphabetical">Alphabetical</option>
               <option value="role">By Role</option>
             </select>
           </div>
 
-          <div>
-            <label className="mb-1 block text-xs uppercase tracking-widest text-zinc-500">
-              New Role
-            </label>
-            <div className="flex gap-2">
-              <input
-                value={newRoleName}
-                onChange={(e) => setNewRoleName(e.target.value)}
-                placeholder="Artillery"
-                className="w-32 rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none"
-              />
-              <button
-                onClick={addRole}
-                className="rounded-xl border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm hover:bg-zinc-700"
-              >
-                Add Role
-              </button>
-            </div>
+          <div className="flex items-end">
+            <button onClick={openAddSpot} className={`w-full ${showAddSpot ? buttonClass : softButtonClass}`}>
+              {showAddSpot ? 'Cancel Add Spot' : 'Add Spot'}
+            </button>
           </div>
 
-          <button
-            onClick={() => {
-              setShowAddSpot((prev) => !prev)
-              setShowSpotCard(true)
-              setPendingPlacement(null)
-            }}
-            className={`rounded-xl border px-3 py-2 text-sm ${
-              showAddSpot
-                ? 'border-blue-500 bg-blue-600 hover:bg-blue-500'
-                : 'border-zinc-700 bg-zinc-800 hover:bg-zinc-700'
-            }`}
-          >
-            {showAddSpot ? 'Cancel Add Spot' : 'Add Spot'}
-          </button>
+          <div className="flex items-end">
+            <a
+              href="/admin"
+              className={`${buttonClass} flex w-full items-center justify-center`}
+            >
+              Role Editor &amp; Invite Panel
+            </a>
+          </div>
         </div>
 
-        <div className="flex flex-wrap gap-2">
-          {!showSpotList && (
-            <button
-              onClick={() => setShowSpotList(true)}
-              className="rounded-xl border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm hover:bg-zinc-700"
-            >
-              Show Spot List
-            </button>
-          )}
-
-          {!showSpotCard && (
-            <button
-              onClick={() => setShowSpotCard(true)}
-              className="rounded-xl border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm hover:bg-zinc-700"
-            >
-              Show Spot Card
-            </button>
-          )}
-        </div>
-      </div>
-
-      <div className={`grid grid-cols-1 items-start gap-5 ${gridClass}`}>
-        <div className="rounded-3xl border border-zinc-800 bg-zinc-900/70 p-4 shadow-2xl">
-          <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h2 className="text-xl font-semibold">
-                {selectedMap?.name || (isLoading ? 'Loading maps...' : 'No map selected')}
-              </h2>
-              <p className="text-sm text-zinc-400">
-                Scroll to zoom, drag to pan
-                {showAddSpot ? ' • Click map to place a new spot' : ''}
-                {hasSatellite && showSatellite ? ' • Satellite overlay active' : ''}
-              </p>
-            </div>
-
-            <div className="flex min-w-[280px] flex-col gap-2 rounded-2xl border border-zinc-800 bg-zinc-950/50 p-3">
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => {
-                    if (!hasSatellite) return
-                    setShowSatellite((prev) => !prev)
-                  }}
-                  disabled={!hasSatellite}
-                  className={`rounded-xl border px-3 py-2 text-sm ${
-                    hasSatellite
-                      ? showSatellite
-                        ? 'border-emerald-500 bg-emerald-600 hover:bg-emerald-500'
-                        : 'border-zinc-700 bg-zinc-800 hover:bg-zinc-700'
-                      : 'cursor-not-allowed border-zinc-800 bg-zinc-900 text-zinc-500'
-                  }`}
-                >
-                  {hasSatellite
-                    ? showSatellite
-                      ? 'Satellite On'
-                      : 'Satellite Off'
-                    : 'No Satellite'}
-                </button>
-
-                <span className="text-xs text-zinc-500">
-                  {filteredSpots.length} visible spot
-                  {filteredSpots.length === 1 ? '' : 's'}
-                </span>
+        <div className="grid grid-cols-1 items-start gap-5 xl:grid-cols-[minmax(0,1.7fr)_390px]">
+          <div className={`${panelClass} p-4 md:p-5`}>
+            <div className="mb-4 flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <h2 className="text-xl font-semibold text-white">
+                  {selectedMap?.name || (isLoading ? 'Loading maps...' : 'No map selected')}
+                </h2>
+                <p className="mt-1 text-sm text-zinc-400">
+                  Scroll to zoom, drag to pan
+                  {showAddSpot ? ' • Click map to place a new spot' : ''}
+                  {hasSatellite && showSatellite ? ' • Satellite overlay active' : ''}
+                </p>
               </div>
 
-              <div>
-                <label className="mb-1 block text-xs uppercase tracking-widest text-zinc-500">
-                  Satellite Opacity
-                </label>
-                <div
-                  className={`flex items-center gap-2 rounded-xl border px-3 py-2 ${
-                    hasSatellite && showSatellite
-                      ? 'border-zinc-800 bg-zinc-900'
-                      : 'border-zinc-800 bg-zinc-950 text-zinc-500'
-                  }`}
-                >
+              <div className="text-xs text-zinc-500">
+                {filteredSpots.length} visible spot{filteredSpots.length === 1 ? '' : 's'}
+              </div>
+            </div>
+
+            <div
+              ref={viewportRef}
+              className="relative w-full select-none overflow-hidden rounded-[28px] border border-emerald-400/12 bg-emerald-950/12"
+              style={{ touchAction: 'none', overscrollBehavior: 'contain' }}
+              onMouseMove={handleMouseMove}
+              onMouseUp={stopDragging}
+              onMouseLeave={stopDragging}
+            >
+              <div className="pointer-events-none absolute left-3 top-3 z-20 flex flex-col gap-2">
+                <div className="pointer-events-auto flex items-center gap-2 rounded-2xl border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.94),rgba(8,20,12,0.92))] px-3 py-2 shadow-[0_12px_30px_rgba(0,0,0,0.35)] backdrop-blur-xl">
+                  <button
+                    onClick={zoomIn}
+                    className="rounded-xl border border-emerald-300/15 bg-emerald-900/40 px-3 py-1.5 text-sm font-medium text-emerald-50 transition hover:bg-emerald-800/55"
+                  >
+                    +
+                  </button>
+
+                  <button
+                    onClick={zoomOut}
+                    className="rounded-xl border border-emerald-300/15 bg-emerald-900/40 px-3 py-1.5 text-sm font-medium text-emerald-50 transition hover:bg-emerald-800/55"
+                  >
+                    -
+                  </button>
+
+                  <button
+                    onClick={resetView}
+                    className="rounded-xl border border-emerald-300/15 bg-emerald-900/40 px-3 py-1.5 text-sm font-medium text-emerald-50 transition hover:bg-emerald-800/55"
+                  >
+                    Reset
+                  </button>
+
+                  <div className="ml-1 text-xs text-zinc-300">{scale.toFixed(1)}x</div>
+                </div>
+
+                <div className="pointer-events-auto flex items-center gap-2 rounded-2xl border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.94),rgba(8,20,12,0.92))] px-3 py-2 shadow-[0_12px_30px_rgba(0,0,0,0.35)] backdrop-blur-xl">
+                  <button
+                    onClick={() => {
+                      if (!hasSatellite) return
+                      setShowSatellite((prev) => !prev)
+                    }}
+                    disabled={!hasSatellite}
+                    className={`rounded-xl border px-3 py-1.5 text-sm font-medium transition ${
+                      hasSatellite
+                        ? showSatellite
+                          ? 'border-emerald-300/40 bg-emerald-600/90 text-white hover:bg-emerald-500'
+                          : 'border-emerald-300/15 bg-emerald-900/40 text-emerald-50 hover:bg-emerald-800/55'
+                        : 'cursor-not-allowed border-zinc-800 bg-zinc-900 text-zinc-500'
+                    }`}
+                  >
+                    {hasSatellite
+                      ? showSatellite
+                        ? 'Satellite On'
+                        : 'Satellite Off'
+                      : 'No Satellite'}
+                  </button>
+
                   <input
                     type="range"
                     min="0"
@@ -790,477 +993,583 @@ export default function IntelMap() {
                     value={overlayOpacity}
                     disabled={!hasSatellite || !showSatellite}
                     onChange={(e) => setOverlayOpacity(Number(e.target.value))}
-                    className="w-full"
+                    className="w-28 accent-emerald-500"
                   />
-                  <span className="w-10 text-xs">{overlayOpacity}%</span>
+
+                  <span className="w-10 text-xs text-zinc-300">{overlayOpacity}%</span>
                 </div>
+              </div>
+
+              <div className="relative mx-auto aspect-[4/3] w-full max-h-[78vh] bg-black/30">
+                {selectedMap ? (
+                  <div
+                    className={`absolute inset-0 ${
+                      isDragging
+                        ? 'cursor-grabbing'
+                        : showAddSpot
+                        ? 'cursor-crosshair'
+                        : 'cursor-grab'
+                    }`}
+                    onMouseDown={handleMouseDown}
+                    onClick={handleMapClickForPlacement}
+                    style={{
+                      transform: `translate(${position.x}px, ${position.y}px) scale(${scale})`,
+                      transformOrigin: 'center center',
+                    }}
+                  >
+                    <img
+                      src={selectedMap.image}
+                      alt={selectedMap.name}
+                      className="pointer-events-none absolute inset-0 h-full w-full object-contain"
+                      draggable={false}
+                    />
+
+                    {hasSatellite && showSatellite && selectedMap.overlay && (
+                      <img
+                        src={selectedMap.overlay}
+                        alt={`${selectedMap.name} satellite`}
+                        className="pointer-events-none absolute inset-0 h-full w-full object-contain"
+                        draggable={false}
+                        style={{ opacity: overlayOpacity / 100 }}
+                        onError={() =>
+                          setOverlayBroken((prev) => ({
+                            ...prev,
+                            [selectedMap.id]: true,
+                          }))
+                        }
+                      />
+                    )}
+
+                    {filteredSpots.map((spot) => {
+                      const isActive = selectedSpot?.id === spot.id
+                      const outerSize = `${spot.size}px`
+                      const sideStyles = getSideClasses(spot.side)
+
+                      return (
+                        <button
+                          key={spot.id}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            selectSpot(spot)
+                          }}
+                          className="group absolute -translate-x-1/2 -translate-y-1/2"
+                          style={{ left: `${spot.x}%`, top: `${spot.y}%` }}
+                          aria-label={spot.title}
+                        >
+                          <span
+                            className={`absolute inset-0 blur-sm opacity-70 ${sideStyles.glow} ${
+                              getRoleShape(spot.role) === 'circle'
+                                ? 'rounded-full'
+                                : getRoleShape(spot.role) === 'square'
+                                ? 'rounded-[6px]'
+                                : ''
+                            }`}
+                            style={{
+                              width: outerSize,
+                              height: outerSize,
+                              clipPath:
+                                getRoleShape(spot.role) === 'triangle'
+                                  ? 'polygon(50% 6%, 8% 92%, 92% 92%)'
+                                  : undefined,
+                            }}
+                          />
+                          <ShapeMarker
+                            shape={getRoleShape(spot.role)}
+                            sideClass={sideStyles.marker}
+                            borderClass={sideStyles.border}
+                            icon={getRoleIcon(spot.role)}
+                            size={spot.size}
+                            isActive={isActive}
+                          />
+                        </button>
+                      )
+                    })}
+
+                    {pendingPlacement && (
+                      <div
+                        className="absolute -translate-x-1/2 -translate-y-1/2"
+                        style={{
+                          left: `${pendingPlacement.x}%`,
+                          top: `${pendingPlacement.y}%`,
+                        }}
+                      >
+                        <ShapeMarker
+                          shape={getRoleShape(newSpot.role)}
+                          sideClass="bg-emerald-600/90"
+                          borderClass="border-emerald-300"
+                          icon={getRoleIcon(newSpot.role)}
+                          size={newSpot.size}
+                          isActive={false}
+                        />
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="flex h-full items-center justify-center text-zinc-500">
+                    {isLoading ? 'Loading maps...' : 'No maps found'}
+                  </div>
+                )}
               </div>
             </div>
           </div>
 
-          <div className="mb-3 flex items-center gap-2">
-            <button
-              onClick={zoomIn}
-              className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs hover:bg-zinc-700"
-            >
-              +
-            </button>
-            <button
-              onClick={zoomOut}
-              className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs hover:bg-zinc-700"
-            >
-              -
-            </button>
-            <button
-              onClick={resetView}
-              className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs hover:bg-zinc-700"
-            >
-              Reset
-            </button>
-            <span className="ml-2 text-xs text-zinc-500">
-              Zoom: {scale.toFixed(1)}x
-            </span>
-          </div>
+          <div className="xl:sticky xl:top-[204px] xl:self-start">
+            <div className={`${panelClass} p-4 md:p-5`}>
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setRightTab('list')}
+                    className={`${tabButtonClass} ${
+                      rightTab === 'list'
+                        ? 'border border-emerald-300/25 bg-emerald-600/90 text-white'
+                        : 'border border-emerald-300/15 bg-emerald-900/35 text-emerald-50 hover:bg-emerald-800/55'
+                    }`}
+                  >
+                    Spot List
+                  </button>
+                  <button
+                    onClick={() => setRightTab('details')}
+                    className={`${tabButtonClass} ${
+                      rightTab === 'details'
+                        ? 'border border-emerald-300/25 bg-emerald-600/90 text-white'
+                        : 'border border-emerald-300/15 bg-emerald-900/35 text-emerald-50 hover:bg-emerald-800/55'
+                    }`}
+                  >
+                    Spot Details
+                  </button>
+                </div>
 
-          <div
-            ref={viewportRef}
-            className="relative w-full select-none overflow-hidden rounded-3xl border border-zinc-800 bg-zinc-900"
-            style={{ touchAction: 'none', overscrollBehavior: 'contain' }}
-            onMouseMove={handleMouseMove}
-            onMouseUp={stopDragging}
-            onMouseLeave={stopDragging}
-          >
-            <div className="relative mx-auto aspect-[4/3] w-full max-h-[72vh] bg-zinc-950">
-              {selectedMap ? (
-                <div
-                  className={`absolute inset-0 ${
-                    isDragging
-                      ? 'cursor-grabbing'
-                      : showAddSpot
-                      ? 'cursor-crosshair'
-                      : 'cursor-grab'
-                  }`}
-                  onMouseDown={handleMouseDown}
-                  onClick={handleMapClickForPlacement}
-                  style={{
-                    transform: `translate(${position.x}px, ${position.y}px) scale(${scale})`,
-                    transformOrigin: 'center center',
-                  }}
-                >
-                  <img
-                    src={selectedMap.image}
-                    alt={selectedMap.name}
-                    className="pointer-events-none absolute inset-0 h-full w-full object-contain"
-                    draggable={false}
-                  />
+                <span className="text-xs uppercase tracking-[0.22em] text-zinc-500">
+                  {rightTab === 'list'
+                    ? `${sortedSpots.length} Spots`
+                    : showAddSpot
+                    ? 'New Spot'
+                    : editingSpotId
+                    ? 'Editing'
+                    : selectedSpot
+                    ? 'Selected'
+                    : 'Idle'}
+                </span>
+              </div>
 
-                  {hasSatellite && showSatellite && selectedMap.overlay && (
-                    <img
-                      src={selectedMap.overlay}
-                      alt={`${selectedMap.name} satellite`}
-                      className="pointer-events-none absolute inset-0 h-full w-full object-contain"
-                      draggable={false}
-                      style={{ opacity: overlayOpacity / 100 }}
-                      onError={() =>
-                        setOverlayBroken((prev) => ({
-                          ...prev,
-                          [selectedMap.id]: true,
-                        }))
-                      }
-                    />
-                  )}
+              {rightTab === 'list' ? (
+                <div className="max-h-[68vh] space-y-2 overflow-y-auto pr-1">
+                  {sortedSpots.length > 0 ? (
+                    sortedSpots.map((spot) => {
+                      const sideStyles = getSideClasses(spot.side)
 
-                  {filteredSpots.map((spot) => {
-                    const isActive = selectedSpot?.id === spot.id
-                    const outerSize = `${spot.size}px`
-                    const innerSize = `${Math.max(
-                      4,
-                      Math.round(spot.size * 0.42)
-                    )}px`
-
-                    return (
-                      <button
-                        key={spot.id}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          setSelectedSpot(spot)
-                          setShowSpotCard(true)
-                        }}
-                        className="group absolute -translate-x-1/2 -translate-y-1/2"
-                        style={{ left: `${spot.x}%`, top: `${spot.y}%` }}
-                        aria-label={spot.title}
-                      >
-                        <span
-                          className={`absolute inset-0 rounded-full blur-sm opacity-70 ${getRoleColor(
-                            spot.role
-                          )}`}
-                          style={{ width: outerSize, height: outerSize }}
-                        />
-                        <span
-                          className={`relative flex items-center justify-center rounded-full border border-white/80 ${getRoleColor(
-                            spot.role
-                          )} ${isActive ? 'scale-125' : 'group-hover:scale-110'}`}
-                          style={{ width: outerSize, height: outerSize }}
+                      return (
+                        <button
+                          key={spot.id}
+                          onClick={() => selectSpot(spot)}
+                          className={`w-full rounded-[22px] border p-3 text-left transition ${
+                            selectedSpot?.id === spot.id
+                              ? 'border-emerald-300/35 bg-emerald-500/10'
+                              : 'border-emerald-400/8 bg-emerald-950/18 hover:bg-emerald-900/30'
+                          }`}
                         >
-                          <span
-                            className="rounded-full bg-white"
-                            style={{ width: innerSize, height: innerSize }}
-                          />
-                        </span>
-                      </button>
-                    )
-                  })}
-
-                  {pendingPlacement && (
-                    <div
-                      className="absolute -translate-x-1/2 -translate-y-1/2"
-                      style={{
-                        left: `${pendingPlacement.x}%`,
-                        top: `${pendingPlacement.y}%`,
-                      }}
-                    >
-                      <div
-                        className="rounded-full border border-white bg-blue-500/85 shadow-lg"
-                        style={{
-                          width: `${newSpot.size}px`,
-                          height: `${newSpot.size}px`,
-                        }}
-                      />
+                          <div className="flex items-center gap-2">
+                            <span className="inline-flex h-8 w-8 items-center justify-center">
+                              <ShapeMarker
+                                shape={getRoleShape(spot.role)}
+                                sideClass={sideStyles.marker}
+                                borderClass={sideStyles.border}
+                                icon={getRoleIcon(spot.role)}
+                                size={24}
+                                isActive={selectedSpot?.id === spot.id}
+                              />
+                            </span>
+                            <span className="font-medium text-white">{spot.title}</span>
+                          </div>
+                          <div className="mt-2 flex items-center gap-2 text-[11px] uppercase tracking-[0.2em] text-zinc-500">
+                            <span>{spot.role}</span>
+                            <span>•</span>
+                            <span>{spot.side}</span>
+                          </div>
+                        </button>
+                      )
+                    })
+                  ) : (
+                    <div className="rounded-[22px] border border-dashed border-emerald-400/8 bg-emerald-950/18 p-4 text-sm text-zinc-500">
+                      No spots match the current search/filter.
                     </div>
                   )}
                 </div>
+              ) : showAddSpot ? (
+                <div className="flex h-full flex-col gap-3">
+                  <p className="text-sm text-zinc-400">
+                    1. Click on the map to place the spot. 2. Fill out the card. 3. Hit save.
+                  </p>
+
+                  <input
+                    value={newSpot.title}
+                    onChange={(e) =>
+                      setNewSpot((prev) => ({ ...prev, title: e.target.value }))
+                    }
+                    placeholder="Spot title"
+                    className={inputClass}
+                  />
+
+                  <select
+                    value={newSpot.role}
+                    onChange={(e) =>
+                      setNewSpot((prev) => ({ ...prev, role: e.target.value }))
+                    }
+                    className={inputClass}
+                  >
+                    {roleNames.map((role) => (
+                      <option key={role}>{role}</option>
+                    ))}
+                  </select>
+
+                  <select
+                    value={newSpot.side}
+                    onChange={(e) =>
+                      setNewSpot((prev) => ({
+                        ...prev,
+                        side: e.target.value as SpotSide,
+                      }))
+                    }
+                    className={inputClass}
+                  >
+                    <option value="Axis">Axis</option>
+                    <option value="Allies">Allies</option>
+                    <option value="Both">Both</option>
+                  </select>
+
+                  <div>
+                    <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">
+                      New Spot Size
+                    </label>
+                    <div className="flex items-center gap-2 rounded-2xl border border-emerald-400/10 bg-emerald-950/25 px-3 py-2">
+                      <input
+                        type="range"
+                        min="18"
+                        max="34"
+                        value={newSpot.size}
+                        onChange={(e) =>
+                          setNewSpot((prev) => ({
+                            ...prev,
+                            size: Number(e.target.value),
+                          }))
+                        }
+                        className="w-full accent-emerald-500"
+                      />
+                      <span className="w-8 text-xs text-zinc-300">{newSpot.size}</span>
+                    </div>
+                  </div>
+
+                  <textarea
+                    value={newSpot.notes}
+                    onChange={(e) =>
+                      setNewSpot((prev) => ({ ...prev, notes: e.target.value }))
+                    }
+                    placeholder="Notes / purpose / cautions"
+                    rows={4}
+                    className={inputClass}
+                  />
+
+                  <input
+                    value={newSpot.youtube}
+                    onChange={(e) =>
+                      setNewSpot((prev) => ({ ...prev, youtube: e.target.value }))
+                    }
+                    placeholder="YouTube link"
+                    className={inputClass}
+                  />
+
+                  <div className="rounded-[22px] border border-emerald-400/10 bg-emerald-950/18 p-3">
+                    <label className="mb-2 block text-sm text-zinc-300">
+                      Upload up to 3 images
+                    </label>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      onChange={handleImageUpload}
+                      className="text-sm text-zinc-400 file:mr-3 file:rounded-xl file:border-0 file:bg-emerald-900/60 file:px-3 file:py-2 file:text-sm file:text-white hover:file:bg-emerald-800"
+                    />
+
+                    <div className="mt-3 grid grid-cols-3 gap-2">
+                      {newSpot.images.map((img, index) => (
+                        <div key={index} className="relative">
+                          <img
+                            src={img}
+                            alt={`Preview ${index + 1}`}
+                            className="h-24 w-full rounded-xl border border-zinc-800 object-cover"
+                          />
+                          <button
+                            onClick={() => removeNewSpotImage(index)}
+                            className="absolute right-1 top-1 rounded-full bg-black/70 px-2 py-1 text-xs text-white"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="mt-2 text-xs text-zinc-500">
+                      {newSpot.images.length}/3 images selected
+                    </div>
+                  </div>
+
+                  <div className="rounded-[22px] border border-emerald-400/10 bg-emerald-950/18 p-3 text-sm text-zinc-400">
+                    {pendingPlacement ? (
+                      <>
+                        Spot placed at:{' '}
+                        <span className="text-white">{pendingPlacement.x}%</span>,{' '}
+                        <span className="text-white">{pendingPlacement.y}%</span>
+                      </>
+                    ) : (
+                      'No placement yet. Click the map to place the new spot.'
+                    )}
+                  </div>
+
+                  <div className="mt-2 flex gap-2">
+                    <button onClick={saveNewSpot} className={buttonClass}>
+                      Save Spot
+                    </button>
+                    <button
+                      onClick={() => {
+                        setPendingPlacement(null)
+                        setShowAddSpot(false)
+                        setNewSpot((prev) => ({
+                          ...prev,
+                          images: [],
+                          size: 20,
+                          side: 'Both',
+                        }))
+                      }}
+                      className={softButtonClass}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : editingSpotId && selectedSpot ? (
+                <div className="flex h-full flex-col gap-3">
+                  <input
+                    value={editSpot.title}
+                    onChange={(e) =>
+                      setEditSpot((prev) => ({ ...prev, title: e.target.value }))
+                    }
+                    placeholder="Spot title"
+                    className={inputClass}
+                  />
+
+                  <select
+                    value={editSpot.role}
+                    onChange={(e) =>
+                      setEditSpot((prev) => ({ ...prev, role: e.target.value }))
+                    }
+                    className={inputClass}
+                  >
+                    {roleNames.map((role) => (
+                      <option key={role}>{role}</option>
+                    ))}
+                  </select>
+
+                  <select
+                    value={editSpot.side}
+                    onChange={(e) =>
+                      setEditSpot((prev) => ({
+                        ...prev,
+                        side: e.target.value as SpotSide,
+                      }))
+                    }
+                    className={inputClass}
+                  >
+                    <option value="Axis">Axis</option>
+                    <option value="Allies">Allies</option>
+                    <option value="Both">Both</option>
+                  </select>
+
+                  <div>
+                    <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">
+                      Spot Size
+                    </label>
+                    <div className="flex items-center gap-2 rounded-2xl border border-emerald-400/10 bg-emerald-950/25 px-3 py-2">
+                      <input
+                        type="range"
+                        min="18"
+                        max="34"
+                        value={editSpot.size}
+                        onChange={(e) =>
+                          setEditSpot((prev) => ({
+                            ...prev,
+                            size: Number(e.target.value),
+                          }))
+                        }
+                        className="w-full accent-emerald-500"
+                      />
+                      <span className="w-8 text-xs text-zinc-300">{editSpot.size}</span>
+                    </div>
+                  </div>
+
+                  <textarea
+                    value={editSpot.notes}
+                    onChange={(e) =>
+                      setEditSpot((prev) => ({ ...prev, notes: e.target.value }))
+                    }
+                    rows={4}
+                    className={inputClass}
+                  />
+
+                  <input
+                    value={editSpot.youtube}
+                    onChange={(e) =>
+                      setEditSpot((prev) => ({ ...prev, youtube: e.target.value }))
+                    }
+                    placeholder="YouTube link"
+                    className={inputClass}
+                  />
+
+                  <div className="mt-2 flex gap-2">
+                    <button onClick={saveEditedSpot} className={buttonClass}>
+                      Save Changes
+                    </button>
+                    <button onClick={() => setEditingSpotId(null)} className={softButtonClass}>
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : selectedSpot ? (
+                <div className="flex h-full flex-col">
+                  {selectedSpot.images && selectedSpot.images.length > 0 ? (
+                    <>
+                      <img
+                        src={selectedSpot.images[0]}
+                        alt={selectedSpot.title}
+                        className="h-48 w-full cursor-pointer rounded-[24px] border border-zinc-800 object-cover"
+                        onClick={() => setLightboxImage(selectedSpot.images![0])}
+                      />
+
+                      {selectedSpot.images.length > 1 && (
+                        <div className="mt-3 grid grid-cols-3 gap-2">
+                          {selectedSpot.images.map((img, index) => (
+                            <img
+                              key={index}
+                              src={img}
+                              alt={`${selectedSpot.title} ${index + 1}`}
+                              className="h-16 w-full cursor-pointer rounded-xl border border-zinc-800 object-cover"
+                              onClick={() => setLightboxImage(img)}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="flex h-48 w-full items-center justify-center rounded-[24px] border border-dashed border-emerald-400/10 bg-emerald-950/18 text-zinc-500">
+                      No images
+                    </div>
+                  )}
+
+                  <div className="mt-4 flex flex-wrap items-center gap-2 text-xs uppercase tracking-[0.2em] text-zinc-400">
+                    <span
+                      className={`rounded-full px-3 py-1 text-white ${getRoleColor(
+                        selectedSpot.role
+                      )}`}
+                    >
+                      {selectedSpot.role}
+                    </span>
+
+                    <span
+                      className={`rounded-full px-3 py-1 ${getSideClasses(
+                        selectedSpot.side
+                      ).badge}`}
+                    >
+                      {selectedSpot.side}
+                    </span>
+
+                    <span className="inline-flex items-center rounded-full bg-emerald-900/45 px-3 py-1 text-white normal-case tracking-normal">
+                      <MarkerIcon icon={getRoleIcon(selectedSpot.role)} sizePx={16} />
+                    </span>
+                  </div>
+
+                  <h3 className="mt-4 text-2xl font-bold text-white">{selectedSpot.title}</h3>
+                  <p className="mt-3 text-sm leading-6 text-zinc-300">
+                    {selectedSpot.notes}
+                  </p>
+
+                  <div className="mt-4">
+                    <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">
+                      Selected Spot Size
+                    </label>
+                    <div className="flex items-center gap-2 rounded-2xl border border-emerald-400/10 bg-emerald-950/25 px-3 py-2">
+                      <input
+                        type="range"
+                        min="18"
+                        max="34"
+                        value={selectedSpot.size}
+                        onChange={(e) =>
+                          updateSelectedSpotSize(Number(e.target.value))
+                        }
+                        className="w-full accent-emerald-500"
+                      />
+                      <span className="w-8 text-xs text-zinc-300">{selectedSpot.size}</span>
+                    </div>
+                  </div>
+
+                  {selectedSpotEmbedUrl && (
+                    <div className="mt-5">
+                      <div className="overflow-hidden rounded-[24px] border border-zinc-800 bg-black">
+                        <iframe
+                          className="aspect-video w-full"
+                          src={`${selectedSpotEmbedUrl}?rel=0&modestbranding=1`}
+                          title={`${selectedSpot.title} video`}
+                          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                          referrerPolicy="strict-origin-when-cross-origin"
+                          allowFullScreen
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {selectedSpot.youtube && (
+                    <a
+                      href={selectedSpot.youtube}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="mt-3 inline-flex w-fit items-center rounded-2xl border border-emerald-300/15 bg-emerald-900/35 px-4 py-2 text-sm font-medium hover:bg-emerald-800/55"
+                    >
+                      Open on YouTube
+                    </a>
+                  )}
+
+                  <div className="mt-4 flex gap-2">
+                    <button onClick={startEditingSpot} className={softButtonClass}>
+                      Edit Spot
+                    </button>
+
+                    <button
+                      onClick={deleteSelectedSpot}
+                      className="inline-flex w-fit items-center rounded-2xl border border-red-700 bg-red-900/60 px-4 py-2 text-sm font-medium hover:bg-red-800/70"
+                    >
+                      Delete Spot
+                    </button>
+                  </div>
+
+                  <div className="mt-auto pt-6 text-xs leading-5 text-zinc-500">
+                    Fixed role pack enabled.
+                  </div>
+                </div>
               ) : (
-                <div className="flex h-full items-center justify-center text-zinc-500">
-                  {isLoading ? 'Loading maps...' : 'No maps found'}
+                <div className="flex h-full min-h-[320px] items-center justify-center rounded-[24px] border border-dashed border-emerald-400/10 bg-emerald-950/18 p-8 text-center">
+                  <div>
+                    <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-emerald-400/10 bg-emerald-900/25 text-2xl">
+                      🎯
+                    </div>
+                    <h3 className="text-xl font-semibold text-white">Select a spot</h3>
+                    <p className="mt-2 max-w-sm text-sm leading-6 text-zinc-400">
+                      Click a marker on the map or a name in the list.
+                    </p>
+                  </div>
                 </div>
               )}
             </div>
           </div>
         </div>
-
-        {showSpotList && (
-          <div className="min-h-[420px] rounded-3xl border border-zinc-800 bg-zinc-900/80 p-4 shadow-2xl">
-            <div className="mb-3 flex items-center justify-between gap-2">
-              <h3 className="text-lg font-bold">Spot List</h3>
-              <button
-                onClick={() => setShowSpotList(false)}
-                className="rounded-xl border border-zinc-700 bg-zinc-800 px-3 py-1 text-xs hover:bg-zinc-700"
-              >
-                Hide
-              </button>
-            </div>
-
-            <div className="max-h-[72vh] space-y-2 overflow-y-auto pr-1">
-              {sortedSpots.length > 0 ? (
-                sortedSpots.map((spot) => (
-                  <button
-                    key={spot.id}
-                    onClick={() => {
-                      setSelectedSpot(spot)
-                      setShowSpotCard(true)
-                    }}
-                    className={`w-full rounded-2xl border p-3 text-left transition ${
-                      selectedSpot?.id === spot.id
-                        ? 'border-blue-500 bg-blue-500/10'
-                        : 'border-zinc-800 bg-zinc-950/40 hover:bg-zinc-900'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={`inline-block rounded-full ${getRoleColor(
-                          spot.role
-                        )}`}
-                        style={{ width: '10px', height: '10px' }}
-                      />
-                      <span className="font-medium">{spot.title}</span>
-                    </div>
-                    <div className="mt-1 text-xs uppercase tracking-widest text-zinc-500">
-                      {spot.role}
-                    </div>
-                  </button>
-                ))
-              ) : (
-                <div className="rounded-2xl border border-dashed border-zinc-800 bg-zinc-950/40 p-4 text-sm text-zinc-500">
-                  No spots match the current search/filter.
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {showSpotCard && (
-          <div className="min-h-[420px] rounded-3xl border border-zinc-800 bg-zinc-900/80 p-4 shadow-2xl">
-            <div className="mb-3 flex items-center justify-between gap-2">
-              <h3 className="text-lg font-bold">
-                {showAddSpot ? 'Create New Spot' : 'Spot Details'}
-              </h3>
-              <button
-                onClick={() => {
-                  setShowSpotCard(false)
-                  setShowAddSpot(false)
-                }}
-                className="rounded-xl border border-zinc-700 bg-zinc-800 px-3 py-1 text-xs hover:bg-zinc-700"
-              >
-                Hide
-              </button>
-            </div>
-
-            {showAddSpot ? (
-              <div className="flex h-full flex-col gap-3">
-                <p className="text-sm text-zinc-400">
-                  1. Click on the map to place the dot. 2. Fill out the intel
-                  card. 3. Hit save.
-                </p>
-
-                <input
-                  value={newSpot.title}
-                  onChange={(e) =>
-                    setNewSpot((prev) => ({ ...prev, title: e.target.value }))
-                  }
-                  placeholder="Spot title"
-                  className="rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none"
-                />
-
-                <select
-                  value={newSpot.role}
-                  onChange={(e) =>
-                    setNewSpot((prev) => ({ ...prev, role: e.target.value }))
-                  }
-                  className="rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none"
-                >
-                  {roles.map((role) => (
-                    <option key={role}>{role}</option>
-                  ))}
-                </select>
-
-                <div>
-                  <label className="mb-1 block text-xs uppercase tracking-widest text-zinc-500">
-                    New Spot Dot Size
-                  </label>
-                  <div className="flex items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2">
-                    <input
-                      type="range"
-                      min="8"
-                      max="24"
-                      value={newSpot.size}
-                      onChange={(e) =>
-                        setNewSpot((prev) => ({
-                          ...prev,
-                          size: Number(e.target.value),
-                        }))
-                      }
-                    />
-                    <span className="w-8 text-xs text-zinc-400">
-                      {newSpot.size}
-                    </span>
-                  </div>
-                </div>
-
-                <textarea
-                  value={newSpot.notes}
-                  onChange={(e) =>
-                    setNewSpot((prev) => ({ ...prev, notes: e.target.value }))
-                  }
-                  placeholder="Notes / purpose / cautions"
-                  rows={4}
-                  className="rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none"
-                />
-
-                <input
-                  value={newSpot.youtube}
-                  onChange={(e) =>
-                    setNewSpot((prev) => ({ ...prev, youtube: e.target.value }))
-                  }
-                  placeholder="YouTube link"
-                  className="rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none"
-                />
-
-                <div className="flex flex-col gap-2 rounded-xl border border-zinc-800 bg-zinc-950/40 p-3">
-                  <label className="text-sm text-zinc-300">
-                    Upload up to 3 images
-                  </label>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/*"
-                    multiple
-                    onChange={handleImageUpload}
-                    className="text-sm text-zinc-400 file:mr-3 file:rounded-lg file:border-0 file:bg-zinc-800 file:px-3 file:py-2 file:text-sm file:text-white hover:file:bg-zinc-700"
-                  />
-
-                  <div className="grid grid-cols-3 gap-2">
-                    {newSpot.images.map((img, index) => (
-                      <div key={index} className="relative">
-                        <img
-                          src={img}
-                          alt={`Preview ${index + 1}`}
-                          className="h-24 w-full rounded-xl border border-zinc-800 object-cover"
-                        />
-                        <button
-                          onClick={() => removeNewSpotImage(index)}
-                          className="absolute right-1 top-1 rounded-full bg-black/70 px-2 py-1 text-xs text-white"
-                        >
-                          ✕
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="text-xs text-zinc-500">
-                    {newSpot.images.length}/3 images selected
-                  </div>
-                </div>
-
-                <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-3 text-sm text-zinc-400">
-                  {pendingPlacement ? (
-                    <>
-                      Dot placed at:{' '}
-                      <span className="text-white">{pendingPlacement.x}%</span>,{' '}
-                      <span className="text-white">{pendingPlacement.y}%</span>
-                    </>
-                  ) : (
-                    'No placement yet. Click the map to place the new spot.'
-                  )}
-                </div>
-
-                <div className="mt-2 flex gap-2">
-                  <button
-                    onClick={saveNewSpot}
-                    className="rounded-xl border border-green-600 bg-green-700 px-4 py-2 text-sm hover:bg-green-600"
-                  >
-                    Save Spot
-                  </button>
-                  <button
-                    onClick={() => {
-                      setPendingPlacement(null)
-                      setShowAddSpot(false)
-                      setNewSpot((prev) => ({ ...prev, images: [], size: 14 }))
-                      if (fileInputRef.current) fileInputRef.current.value = ''
-                    }}
-                    className="rounded-xl border border-zinc-700 bg-zinc-800 px-4 py-2 text-sm hover:bg-zinc-700"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            ) : selectedSpot ? (
-              <div className="flex h-full flex-col">
-                {selectedSpot.images && selectedSpot.images.length > 0 ? (
-                  <>
-                    <img
-                      src={selectedSpot.images[0]}
-                      alt={selectedSpot.title}
-                      className="h-48 w-full cursor-pointer rounded-2xl border border-zinc-800 object-cover"
-                      onClick={() => setLightboxImage(selectedSpot.images![0])}
-                    />
-
-                    {selectedSpot.images.length > 1 && (
-                      <div className="mt-3 grid grid-cols-3 gap-2">
-                        {selectedSpot.images.map((img, index) => (
-                          <img
-                            key={index}
-                            src={img}
-                            alt={`${selectedSpot.title} ${index + 1}`}
-                            className="h-16 w-full cursor-pointer rounded-xl border border-zinc-800 object-cover"
-                            onClick={() => setLightboxImage(img)}
-                          />
-                        ))}
-                      </div>
-                    )}
-                  </>
-                ) : (
-                  <div className="flex h-48 w-full items-center justify-center rounded-2xl border border-dashed border-zinc-800 bg-zinc-950/40 text-zinc-500">
-                    No images
-                  </div>
-                )}
-
-                <div className="mt-4 flex items-center gap-2 text-xs uppercase tracking-widest text-zinc-400">
-                  <span
-                    className={`rounded-full px-3 py-1 text-white ${getRoleColor(
-                      selectedSpot.role
-                    )}`}
-                  >
-                    {selectedSpot.role}
-                  </span>
-                </div>
-
-                <h3 className="mt-4 text-2xl font-bold">{selectedSpot.title}</h3>
-                <p className="mt-3 text-sm leading-6 text-zinc-300">
-                  {selectedSpot.notes}
-                </p>
-
-                <div className="mt-4">
-                  <label className="mb-1 block text-xs uppercase tracking-widest text-zinc-500">
-                    Selected Spot Dot Size
-                  </label>
-                  <div className="flex items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2">
-                    <input
-                      type="range"
-                      min="8"
-                      max="24"
-                      value={selectedSpot.size}
-                      onChange={(e) =>
-                        updateSelectedSpotSize(Number(e.target.value))
-                      }
-                    />
-                    <span className="w-8 text-xs text-zinc-400">
-                      {selectedSpot.size}
-                    </span>
-                  </div>
-                </div>
-
-                {selectedSpotEmbedUrl && (
-                  <div className="mt-5">
-                    <div className="overflow-hidden rounded-2xl border border-zinc-800 bg-black">
-                      <iframe
-                        className="aspect-video w-full"
-                        src={`${selectedSpotEmbedUrl}?rel=0&modestbranding=1`}
-                        title={`${selectedSpot.title} video`}
-                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                        referrerPolicy="strict-origin-when-cross-origin"
-                        allowFullScreen
-                      />
-                    </div>
-                  </div>
-                )}
-
-                {selectedSpot.youtube && (
-                  <a
-                    href={selectedSpot.youtube}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="mt-3 inline-flex w-fit items-center rounded-2xl border border-zinc-700 bg-zinc-800 px-4 py-2 text-sm font-medium hover:bg-zinc-700"
-                  >
-                    Open on YouTube
-                  </a>
-                )}
-
-                <button
-                  onClick={deleteSelectedSpot}
-                  className="mt-4 inline-flex w-fit items-center rounded-2xl border border-red-700 bg-red-900/60 px-4 py-2 text-sm font-medium hover:bg-red-800/70"
-                >
-                  Delete Spot
-                </button>
-
-                <div className="mt-auto pt-6 text-xs leading-5 text-zinc-500">
-                  Live database-backed spots are on. Realtime updates are active.
-                </div>
-              </div>
-            ) : (
-              <div className="flex h-full min-h-[360px] items-center justify-center rounded-2xl border border-dashed border-zinc-800 bg-zinc-950/40 p-8 text-center">
-                <div>
-                  <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-zinc-800 bg-zinc-900 text-2xl">
-                    🎯
-                  </div>
-                  <h3 className="text-xl font-semibold">Select a spot</h3>
-                  <p className="mt-2 max-w-sm text-sm leading-6 text-zinc-400">
-                    Click a dot on the map or a name in the list.
-                  </p>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
       </div>
 
       {lightboxImage && (

@@ -31,17 +31,9 @@ export async function addAllowedUser(formData: FormData) {
   const discordUserId = String(formData.get('discord_user_id') || '').trim()
   const role = String(formData.get('role') || '').trim()
 
-  if (!discordUserId) {
-    throw new Error('Discord ID is required')
-  }
-
-  if (!/^\d+$/.test(discordUserId)) {
-    throw new Error('Discord ID must be numbers only')
-  }
-
-  if (role !== 'admin' && role !== 'viewer') {
-    throw new Error('Role must be admin or viewer')
-  }
+  if (!discordUserId) return
+  if (!/^\d+$/.test(discordUserId)) return
+  if (role !== 'admin' && role !== 'viewer') return
 
   const { error } = await supabaseAdmin.from('allowed_users').upsert(
     {
@@ -51,9 +43,7 @@ export async function addAllowedUser(formData: FormData) {
     { onConflict: 'discord_user_id' }
   )
 
-  if (error) {
-    throw new Error(error.message)
-  }
+  if (error) throw new Error(error.message)
 
   revalidatePath('/admin')
 }
@@ -63,22 +53,35 @@ export async function removeAllowedUser(formData: FormData) {
 
   const discordUserId = String(formData.get('discord_user_id') || '').trim()
 
-  if (!discordUserId) {
-    throw new Error('Discord ID is required')
-  }
-
-  if (discordUserId === user.discordId) {
-    throw new Error('You cannot remove your own admin access here')
-  }
+  if (!discordUserId) return
+  if (discordUserId === user.discordId) return
 
   const { error } = await supabaseAdmin
     .from('allowed_users')
     .delete()
     .eq('discord_user_id', discordUserId)
 
-  if (error) {
-    throw new Error(error.message)
-  }
+  if (error) throw new Error(error.message)
+
+  revalidatePath('/admin')
+}
+
+export async function updateAllowedUserRole(formData: FormData) {
+  const user = await requireAdmin()
+
+  const discordUserId = String(formData.get('discord_user_id') || '').trim()
+  const role = String(formData.get('role') || '').trim()
+
+  if (!discordUserId) return
+  if (role !== 'admin' && role !== 'viewer') return
+  if (discordUserId === user.discordId && role !== 'admin') return
+
+  const { error } = await supabaseAdmin
+    .from('allowed_users')
+    .update({ role })
+    .eq('discord_user_id', discordUserId)
+
+  if (error) throw new Error(error.message)
 
   revalidatePath('/admin')
 }
