@@ -244,13 +244,6 @@ function ShapeMarker({
         style={{ width: `${size}px`, height: `${size}px` }}
       >
         <span
-          className={`absolute inset-0`}
-          style={{
-            clipPath: 'polygon(50% 6%, 8% 92%, 92% 92%)',
-            background: 'rgba(100,100,100,0)',
-          }}
-        />
-        <span
           className="absolute inset-0"
           style={{
             clipPath: 'polygon(50% 6%, 8% 92%, 92% 92%)',
@@ -330,6 +323,7 @@ export default function IntelMap() {
     notes: '',
     youtube: '',
     images: [] as string[],
+    imageFiles: [] as File[],
     size: 20,
   })
 
@@ -672,23 +666,16 @@ export default function IntelMap() {
     const files = Array.from(e.target.files || [])
     if (!files.length) return
 
-    const remainingSlots = 3 - newSpot.images.length
+    const remainingSlots = 3 - newSpot.imageFiles.length
     const limitedFiles = files.slice(0, remainingSlots)
 
-    limitedFiles.forEach((file) => {
-      const reader = new FileReader()
-      reader.onload = () => {
-        const result = reader.result
-        if (typeof result === 'string') {
-          setNewSpot((prev) => ({
-            ...prev,
-            images:
-              prev.images.length < 3 ? [...prev.images, result] : prev.images,
-          }))
-        }
-      }
-      reader.readAsDataURL(file)
-    })
+    const previewUrls = limitedFiles.map((file) => URL.createObjectURL(file))
+
+    setNewSpot((prev) => ({
+      ...prev,
+      imageFiles: [...prev.imageFiles, ...limitedFiles],
+      images: [...prev.images, ...previewUrls],
+    }))
 
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
@@ -697,48 +684,94 @@ export default function IntelMap() {
     setNewSpot((prev) => ({
       ...prev,
       images: prev.images.filter((_, i) => i !== index),
+      imageFiles: prev.imageFiles.filter((_, i) => i !== index),
     }))
   }
 
-  const saveNewSpot = async () => {
-    if (!pendingPlacement) return
-    if (!newSpot.title.trim()) return
-    if (!newSpot.role.trim()) return
-    if (!selectedMapId) return
+  const uploadSpotImage = async (file: File) => {
+    const safeName = `${Date.now()}-${Math.random().toString(36).slice(2)}-${file.name}`
 
-    const payload = {
-      map_id: selectedMapId,
-      title: newSpot.title.trim(),
-      role: newSpot.role,
-      side: newSpot.side,
-      notes: newSpot.notes.trim(),
-      youtube: newSpot.youtube.trim() || null,
-      images: newSpot.images,
-      x: pendingPlacement.x,
-      y: pendingPlacement.y,
-      size: newSpot.size,
-    }
-
-    const { error } = await supabase.from('spots').insert(payload)
+    const { error } = await supabase.storage
+      .from('spot-images')
+      .upload(safeName, file)
 
     if (error) {
-      console.error('Error saving spot:', error)
+      throw error
+    }
+
+    const { data } = supabase.storage
+      .from('spot-images')
+      .getPublicUrl(safeName)
+
+    return data.publicUrl
+  }
+
+  const saveNewSpot = async () => {
+    if (!pendingPlacement) {
+      alert('Click on the map first to place the spot.')
       return
     }
 
-    setShowAddSpot(false)
-    setPendingPlacement(null)
-    setRightTab('details')
-    setNewSpot({
-      title: '',
-      role: 'MG',
-      side: 'Both',
-      notes: '',
-      youtube: '',
-      images: [],
-      size: 20,
-    })
-    if (fileInputRef.current) fileInputRef.current.value = ''
+    if (!newSpot.title.trim()) {
+      alert('Enter a title before saving.')
+      return
+    }
+
+    if (!newSpot.role.trim()) {
+      alert('Choose a role before saving.')
+      return
+    }
+
+    if (!selectedMapId) {
+      alert('No map selected.')
+      return
+    }
+
+    try {
+      const uploadedImageUrls = await Promise.all(
+        newSpot.imageFiles.map((file) => uploadSpotImage(file))
+      )
+
+      const payload = {
+        map_id: selectedMapId,
+        title: newSpot.title.trim(),
+        role: newSpot.role,
+        side: newSpot.side,
+        notes: newSpot.notes.trim(),
+        youtube: newSpot.youtube.trim() || null,
+        images: uploadedImageUrls,
+        x: pendingPlacement.x,
+        y: pendingPlacement.y,
+        size: newSpot.size,
+      }
+
+      const { error } = await supabase.from('spots').insert(payload)
+
+      if (error) {
+        console.error('Error saving spot:', JSON.stringify(error, null, 2))
+        alert(`Error saving spot: ${error.message || 'Unknown error'}`)
+        return
+      }
+
+      setShowAddSpot(false)
+      setPendingPlacement(null)
+      setRightTab('details')
+      setNewSpot({
+        title: '',
+        role: 'MG',
+        side: 'Both',
+        notes: '',
+        youtube: '',
+        images: [],
+        imageFiles: [],
+        size: 20,
+      })
+
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    } catch (err: any) {
+      console.error('Upload/save failure:', err)
+      alert(err?.message || 'Failed to upload image or save spot.')
+    }
   }
 
   const startEditingSpot = () => {
@@ -1337,6 +1370,7 @@ export default function IntelMap() {
                         setNewSpot((prev) => ({
                           ...prev,
                           images: [],
+                          imageFiles: [],
                           size: 20,
                           side: 'Both',
                         }))
