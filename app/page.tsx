@@ -182,7 +182,7 @@ function normalizeSide(side: unknown): SpotSide {
 }
 
 function clampSpotSize(size: number): number {
-  return Math.max(8, Math.min(20, Number(size || 12)))
+  return Math.max(2, Math.min(20, Number(size || 12)))
 }
 
 function normalizeRoles(raw: any): string[] {
@@ -554,7 +554,7 @@ function ShapeMarker({ shape, sideClass, borderClass, icon, size, isActive }: {
   shape: MarkerShape; sideClass: string; borderClass: string
   icon: string; size: number; isActive: boolean
 }) {
-  const common = `relative flex items-center justify-center border-2 ${sideClass} ${borderClass} shadow-[0_10px_25px_rgba(0,0,0,0.35)] ` +
+  const common = `relative flex items-center justify-center ${sideClass} ` +
     (isActive ? 'scale-125' : 'group-hover:scale-110')
 
   if (shape === 'square') {
@@ -895,7 +895,7 @@ export default function IntelMap() {
       const mX   = e.clientX - rect.left
       const mY   = e.clientY - rect.top
       setScale((prevScale) => {
-        const next      = e.deltaY < 0 ? Math.min(prevScale + 0.12, 3) : Math.max(prevScale - 0.12, 1)
+        const next      = e.deltaY < 0 ? Math.min(prevScale + 0.12, 8) : Math.max(prevScale - 0.12, 1)
         const zoomRatio = next / prevScale
         setPosition((prevPos) => {
           const cX   = rect.width  / 2
@@ -939,7 +939,7 @@ export default function IntelMap() {
   }
 
   // ── zoom controls
-  const zoomIn  = () => setScale((p) => Math.min(p + 0.2, 3))
+  const zoomIn  = () => setScale((p) => Math.min(p + 0.2, 8))
   const zoomOut = () => setScale((p) => { const n = Math.max(p - 0.2, 1); setPosition((o) => clampPosition(o.x, o.y, n)); return n })
   const resetView = () => { setScale(1); setPosition({ x: 0, y: 0 }) }
 
@@ -1634,9 +1634,6 @@ export default function IntelMap() {
                             pointerEvents: (placementMode || routeDrawMode) ? 'none' : undefined,
                           }}
                           aria-label={spot.title}>
-                          <span className={`absolute inset-0 blur-sm opacity-70 ${sideStyles.glow} ${shape === 'circle' ? 'rounded-full' : shape === 'square' ? 'rounded-[6px]' : ''}`}
-                            style={{ width: `${renderedSize}px`, height: `${renderedSize}px`,
-                              clipPath: shape === 'triangle' ? 'polygon(50% 6%, 8% 92%, 92% 92%)' : undefined }} />
                           <ShapeMarker shape={shape}
                             sideClass={spot.pending ? 'bg-emerald-500/90' : sideStyles.marker}
                             borderClass={spot.pending ? 'border-emerald-200' : sideStyles.border}
@@ -1657,7 +1654,7 @@ export default function IntelMap() {
                         <ShapeMarker shape={getRoleShape(newSpot.roles?.[0] || 'MG')}
                           sideClass="bg-emerald-600/90" borderClass="border-emerald-300"
                           icon={getRoleIcon(newSpot.roles?.[0] || 'MG')}
-                          size={Math.max(8, newSpot.roles?.[0] === 'Tank' ? Math.round(clampSpotSize(newSpot.size) * 0.6) : clampSpotSize(newSpot.size))}
+                          size={Math.max(2, newSpot.roles?.[0] === 'Tank' ? Math.round(clampSpotSize(newSpot.size) * 0.6) : clampSpotSize(newSpot.size))}
                           isActive={false} />
                       </div>
                     )}
@@ -1765,7 +1762,7 @@ export default function IntelMap() {
                   <div>
                     <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">Spot Size</label>
                     <div className="flex items-center gap-2 rounded-2xl border border-emerald-400/10 bg-emerald-950/25 px-3 py-2">
-                      <input type="range" min="8" max="20" value={clampSpotSize(newSpot.size)}
+                      <input type="range" min="2" max="20" value={clampSpotSize(newSpot.size)}
                         onChange={(e) => setNewSpot((p) => ({ ...p, size: clampSpotSize(Number(e.target.value)) }))}
                         className="w-full accent-emerald-500" />
                       <span className="w-8 text-xs text-zinc-300">{clampSpotSize(newSpot.size)}</span>
@@ -1834,7 +1831,7 @@ export default function IntelMap() {
                   <div>
                     <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">Spot Size</label>
                     <div className="flex items-center gap-2 rounded-2xl border border-emerald-400/10 bg-emerald-950/25 px-3 py-2">
-                      <input type="range" min="8" max="20" value={clampSpotSize(editSpot.size)}
+                      <input type="range" min="2" max="20" value={clampSpotSize(editSpot.size)}
                         onChange={(e) => updateEditSpotSize(Number(e.target.value))} className="w-full accent-emerald-500" />
                       <span className="w-8 text-xs text-zinc-300">{clampSpotSize(editSpot.size)}</span>
                     </div>
@@ -2100,7 +2097,7 @@ export default function IntelMap() {
                     <div className="mt-4">
                       <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">Spot Size</label>
                       <div className="flex items-center gap-2 rounded-2xl border border-emerald-400/10 bg-emerald-950/25 px-3 py-2">
-                        <input type="range" min="8" max="20" value={clampSpotSize(selectedSpot.size)}
+                        <input type="range" min="2" max="20" value={clampSpotSize(selectedSpot.size)}
                           onChange={(e) => updateSelectedSpotSize(Number(e.target.value))}
                           className="w-full accent-emerald-500" />
                         <span className="w-8 text-xs text-zinc-300">{clampSpotSize(selectedSpot.size)}</span>
