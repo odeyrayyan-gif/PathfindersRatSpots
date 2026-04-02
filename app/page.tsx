@@ -638,10 +638,14 @@ export default function IntelMap() {
   const [editSpot, setEditSpot] = React.useState({
     title: '', roles: ['MG'] as string[], side: 'Both' as SpotSide,
     notes: '', youtube: '', size: 12,
+    images:    [] as string[],
     cones:     null as SpotConeSet | null,
     fireLines: null as SpotLineSet | null,
     routes:    [] as SpotRoute[],
   })
+  const [editSpotNewFiles,    setEditSpotNewFiles]    = React.useState<File[]>([])
+  const [editSpotNewPreviews, setEditSpotNewPreviews] = React.useState<string[]>([])
+  const editFileInputRef = React.useRef<HTMLInputElement | null>(null)
 
   // ── cone/line placement state
   const [placementMode,   setPlacementMode]   = React.useState<PlacementMode>(null)
@@ -1053,7 +1057,7 @@ export default function IntelMap() {
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || [])
     if (!files.length) return
-    const limited     = files.slice(0, 3 - newSpot.imageFiles.length)
+    const limited     = files.slice(0, 5 - newSpot.imageFiles.length)
     if (!limited.length) { if (fileInputRef.current) fileInputRef.current.value = ''; return }
     const previews    = limited.map((f) => URL.createObjectURL(f))
     setNewSpot((p) => ({ ...p, imageFiles: [...p.imageFiles, ...limited], images: [...p.images, ...previews] }))
@@ -1139,27 +1143,43 @@ export default function IntelMap() {
       roles: selectedSpot.roles?.length ? selectedSpot.roles : [selectedSpot.role || 'MG'],
       side:  selectedSpot.side, notes: selectedSpot.notes,
       youtube: selectedSpot.youtube || '', size: clampSpotSize(selectedSpot.size),
+      images: selectedSpot.images || [],
       cones: selectedSpot.cones || null, fireLines: selectedSpot.fireLines || null,
       routes: selectedSpot.routes || [],
     })
+    setEditSpotNewFiles([])
+    setEditSpotNewPreviews([])
+    if (editFileInputRef.current) editFileInputRef.current.value = ''
     setRightTab('details')
   }
 
   const saveEditedSpot = async () => {
     if (!selectedSpot || selectedSpot.pending || typeof selectedSpot.id !== 'number') return
-    const primaryRole  = editSpot.roles[0] || 'MG'
-    const cleanedCones = cleanupConeSet(editSpot.cones)
-    const cleanedLines = cleanupLineSet(editSpot.fireLines)
-    const cleanedRoutes= editSpot.routes.filter((r) => r.points.length >= 2)
+    const primaryRole   = editSpot.roles[0] || 'MG'
+    const cleanedCones  = cleanupConeSet(editSpot.cones)
+    const cleanedLines  = cleanupLineSet(editSpot.fireLines)
+    const cleanedRoutes = editSpot.routes.filter((r) => r.points.length >= 2)
+
+    // Upload any newly added files then combine with kept existing images
+    let uploadedUrls: string[] = []
+    if (editSpotNewFiles.length > 0) {
+      try { uploadedUrls = await Promise.all(editSpotNewFiles.map(uploadImage)) }
+      catch (err: any) { console.error('Image upload error:', err); return }
+    }
+    const finalImages = [...editSpot.images, ...uploadedUrls]
 
     const { error } = await supabase.from('spots').update({
       title: editSpot.title.trim(), role: primaryRole, roles: editSpot.roles,
       side: editSpot.side, notes: editSpot.notes.trim(),
       youtube: editSpot.youtube.trim() || null, size: clampSpotSize(editSpot.size),
+      images: finalImages,
       cone: cleanedCones, fire_lines: cleanedLines, routes: cleanedRoutes,
     }).eq('id', selectedSpot.id)
 
     if (error) { console.error('Update error:', error); return }
+    revokeUrls(editSpotNewPreviews)
+    setEditSpotNewFiles([])
+    setEditSpotNewPreviews([])
     setEditingSpotId(null); setRouteDrawMode(false); resetPlacementState()
   }
 
@@ -1186,6 +1206,10 @@ export default function IntelMap() {
       const orig = maps.find((m) => m.id === selectedMapId)?.spots.find((s) => s.id === selectedSpot.id)
       if (orig) setSelectedSpot(orig)
     }
+    revokeUrls(editSpotNewPreviews)
+    setEditSpotNewFiles([])
+    setEditSpotNewPreviews([])
+    if (editFileInputRef.current) editFileInputRef.current.value = ''
     setEditingSpotId(null); resetPlacementState()
     setRouteDrawMode(false); setDrawingPoints([])
   }
@@ -1752,7 +1776,7 @@ export default function IntelMap() {
                   <input value={newSpot.youtube} onChange={(e) => setNewSpot((p) => ({ ...p, youtube: e.target.value }))}
                     placeholder="YouTube link" className={inputClass} />
                   <div className="rounded-[22px] border border-emerald-400/10 bg-emerald-950/18 p-3">
-                    <label className="mb-2 block text-sm text-zinc-300">Upload up to 3 images</label>
+                    <label className="mb-2 block text-sm text-zinc-300">Upload up to 5 images</label>
                     <input ref={fileInputRef} type="file" accept="image/*" multiple onChange={handleImageUpload}
                       className="text-sm text-zinc-400 file:mr-3 file:rounded-xl file:border-0 file:bg-emerald-900/60 file:px-3 file:py-2 file:text-sm file:text-white hover:file:bg-emerald-800" />
                     <div className="mt-3 grid grid-cols-3 gap-2">
@@ -1763,7 +1787,7 @@ export default function IntelMap() {
                         </div>
                       ))}
                     </div>
-                    <div className="mt-2 text-xs text-zinc-500">{newSpot.images.length}/3 images</div>
+                    <div className="mt-2 text-xs text-zinc-500">{newSpot.images.length}/5 images</div>
                   </div>
                   <div className="rounded-[22px] border border-emerald-400/10 bg-emerald-950/18 p-3 text-sm text-zinc-400">
                     {pendingPlacement ? <>Placed at <span className="text-white">{pendingPlacement.x}%</span>, <span className="text-white">{pendingPlacement.y}%</span></> : 'Click the map to place the spot.'}
@@ -1960,6 +1984,71 @@ export default function IntelMap() {
                     placeholder="Notes" rows={3} className={inputClass} />
                   <input value={editSpot.youtube} onChange={(e) => setEditSpot((p) => ({ ...p, youtube: e.target.value }))}
                     placeholder="YouTube link" className={inputClass} />
+
+                  {/* ── Photo management */}
+                  <div className="rounded-[22px] border border-emerald-400/10 bg-emerald-950/18 p-3">
+                    <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">
+                      Photos ({editSpot.images.length + editSpotNewPreviews.length}/5)
+                    </label>
+
+                    {/* Existing photos */}
+                    {editSpot.images.length > 0 && (
+                      <div className="mb-3 grid grid-cols-3 gap-2">
+                        {editSpot.images.map((img, idx) => (
+                          <div key={idx} className="relative">
+                            <img src={img} alt={`Photo ${idx + 1}`}
+                              className="h-24 w-full rounded-xl border border-zinc-800 object-cover" />
+                            <button
+                              onClick={() => setEditSpot((p) => ({ ...p, images: p.images.filter((_, i) => i !== idx) }))}
+                              className="absolute right-1 top-1 rounded-full bg-black/80 px-2 py-0.5 text-xs text-white hover:bg-red-900/90"
+                              title="Remove photo">✕</button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* New photo previews */}
+                    {editSpotNewPreviews.length > 0 && (
+                      <div className="mb-3 grid grid-cols-3 gap-2">
+                        {editSpotNewPreviews.map((url, idx) => (
+                          <div key={idx} className="relative">
+                            <img src={url} alt={`New ${idx + 1}`}
+                              className="h-24 w-full rounded-xl border border-emerald-600/40 object-cover" />
+                            <span className="absolute left-1 top-1 rounded-full bg-emerald-700/90 px-1.5 py-0.5 text-[10px] text-white">New</span>
+                            <button
+                              onClick={() => {
+                                URL.revokeObjectURL(editSpotNewPreviews[idx])
+                                setEditSpotNewPreviews((p) => p.filter((_, i) => i !== idx))
+                                setEditSpotNewFiles((p) => p.filter((_, i) => i !== idx))
+                              }}
+                              className="absolute right-1 top-1 rounded-full bg-black/80 px-2 py-0.5 text-xs text-white hover:bg-red-900/90"
+                              title="Remove">✕</button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Upload more */}
+                    {editSpot.images.length + editSpotNewPreviews.length < 5 && (
+                      <>
+                        <input ref={editFileInputRef} type="file" accept="image/*" multiple
+                          onChange={(e) => {
+                            const files = Array.from(e.target.files || [])
+                            const slots = 5 - editSpot.images.length - editSpotNewPreviews.length
+                            const limited = files.slice(0, slots)
+                            if (!limited.length) return
+                            const previews = limited.map((f) => URL.createObjectURL(f))
+                            setEditSpotNewFiles((p) => [...p, ...limited])
+                            setEditSpotNewPreviews((p) => [...p, ...previews])
+                            if (editFileInputRef.current) editFileInputRef.current.value = ''
+                          }}
+                          className="text-sm text-zinc-400 file:mr-3 file:rounded-xl file:border-0 file:bg-emerald-900/60 file:px-3 file:py-2 file:text-sm file:text-white hover:file:bg-emerald-800" />
+                        <p className="mt-1.5 text-xs text-zinc-600">
+                          {5 - editSpot.images.length - editSpotNewPreviews.length} slot{5 - editSpot.images.length - editSpotNewPreviews.length !== 1 ? 's' : ''} remaining
+                        </p>
+                      </>
+                    )}
+                  </div>
 
                   <div className="flex gap-2">
                     <button onClick={saveEditedSpot} className={buttonClass}>Save Changes</button>
