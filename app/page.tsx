@@ -27,6 +27,7 @@ type SpotConeSet = {
 type SpotLine = {
   endX: number
   endY: number
+  midpoint: string // 'Any' = always visible regardless of filter
 }
 
 type SpotLineSet = {
@@ -216,7 +217,11 @@ function normalizeLine(rawLine: any): SpotLine | null {
   const endX = Number(rawLine.endX)
   const endY = Number(rawLine.endY)
   if (isNaN(endX) || isNaN(endY)) return null
-  return { endX: Math.max(0, Math.min(100, endX)), endY: Math.max(0, Math.min(100, endY)) }
+  return {
+    endX:     Math.max(0, Math.min(100, endX)),
+    endY:     Math.max(0, Math.min(100, endY)),
+    midpoint: typeof rawLine.midpoint === 'string' ? rawLine.midpoint : 'Any',
+  }
 }
 
 function normalizeLineSet(rawLines: any): SpotLineSet | null {
@@ -645,6 +650,7 @@ export default function IntelMap() {
   const [previewPoint,    setPreviewPoint]     = React.useState<{ x: number; y: number } | null>(null)
   const [editingConeSide, setEditingConeSide]  = React.useState<ConeSide>('Axis')
   const [toolMode,        setToolMode]         = React.useState<'cone' | 'line'>('cone')
+  const [snipeLineMidpoint, setSnipeLineMidpoint] = React.useState('Any')
 
   // ── route drawing state
   const [routeDrawMode,  setRouteDrawMode]  = React.useState(false)
@@ -1032,7 +1038,7 @@ export default function IntelMap() {
         return
       }
       if (placementMode === 'line_end') {
-        const nextLines = cleanupLineSet({ ...(editSpot.fireLines || {}), [editingConeSide]: { endX: pt.x, endY: pt.y } })
+        const nextLines = cleanupLineSet({ ...(editSpot.fireLines || {}), [editingConeSide]: { endX: pt.x, endY: pt.y, midpoint: snipeLineMidpoint } })
         setEditSpot((p) => ({ ...p, fireLines: nextLines }))
         setSelectedSpot((p) => p ? { ...p, fireLines: nextLines } : p)
         patchSpotInMaps(selectedSpot.id, { fireLines: nextLines })
@@ -1533,6 +1539,7 @@ export default function IntelMap() {
                             {/* Fire lines */}
                             {showFireLines && roleSupportsLine(primaryRole) && spot.fireLines?.Axis && (() => {
                               const l = spot.fireLines.Axis!
+                              if (activeMidpoint !== 'All' && l.midpoint !== 'Any' && l.midpoint !== activeMidpoint) return null
                               const dm = getDistanceMeters(spot.x, spot.y, l.endX, l.endY)
                               const maxM = getMaxRangeMeters(primaryRole, 'Axis')
                               return (
@@ -1543,6 +1550,7 @@ export default function IntelMap() {
                             })()}
                             {showFireLines && roleSupportsLine(primaryRole) && spot.fireLines?.Allies && (() => {
                               const l = spot.fireLines.Allies!
+                              if (activeMidpoint !== 'All' && l.midpoint !== 'Any' && l.midpoint !== activeMidpoint) return null
                               const dm = getDistanceMeters(spot.x, spot.y, l.endX, l.endY)
                               const maxM = getMaxRangeMeters(primaryRole, 'Allies')
                               return (
@@ -1834,6 +1842,14 @@ export default function IntelMap() {
                         )}
                         {toolMode === 'line' && canUseLine && (
                           <>
+                            <div className="mb-2 w-full">
+                              <label className="mb-1 block text-[10px] uppercase tracking-[0.24em] text-zinc-500">Midpoint</label>
+                              <select value={snipeLineMidpoint} onChange={(e) => setSnipeLineMidpoint(e.target.value)}
+                                className={tinyInputClass + ' w-full'}>
+                                <option value="Any">Any (always visible)</option>
+                                {(selectedMap?.midpoints || []).map((mp) => <option key={mp} value={mp}>{mp}</option>)}
+                              </select>
+                            </div>
                             <button onClick={beginLinePlacement} className={softButtonClass}>
                               {placementMode === 'line_end' ? `Placing ${editingConeSide}...` : `Mark ${editingConeSide} Snipe`}
                             </button>
@@ -2033,9 +2049,10 @@ export default function IntelMap() {
                         const dm = getDistanceMeters(selectedSpot.x, selectedSpot.y, l.endX, l.endY)
                         const maxM = getMaxRangeMeters(selectedSpot.roles?.[0] || selectedSpot.role || 'MG', 'Axis')
                         return (
-                          <div className="grid grid-cols-2 gap-2 text-xs uppercase tracking-[0.16em] text-red-300">
-                            <div>Axis Dist <span className="normal-case text-white">{dm}m</span></div>
+                          <div className="grid grid-cols-3 gap-2 text-xs uppercase tracking-[0.16em] text-red-300">
+                            <div>Axis <span className="normal-case text-white">{dm}m</span></div>
                             <div>Max <span className="normal-case text-white">{maxM}m</span>{dm > maxM && <span className="ml-1 text-yellow-400">OUT</span>}</div>
+                            <div className="normal-case text-zinc-400">{l.midpoint !== 'Any' ? l.midpoint : 'Any'}</div>
                           </div>
                         )
                       })()}
@@ -2044,9 +2061,10 @@ export default function IntelMap() {
                         const dm = getDistanceMeters(selectedSpot.x, selectedSpot.y, l.endX, l.endY)
                         const maxM = getMaxRangeMeters(selectedSpot.roles?.[0] || selectedSpot.role || 'MG', 'Allies')
                         return (
-                          <div className="mt-2 grid grid-cols-2 gap-2 text-xs uppercase tracking-[0.16em] text-blue-300">
-                            <div>Allies Dist <span className="normal-case text-white">{dm}m</span></div>
+                          <div className="mt-2 grid grid-cols-3 gap-2 text-xs uppercase tracking-[0.16em] text-blue-300">
+                            <div>Allies <span className="normal-case text-white">{dm}m</span></div>
                             <div>Max <span className="normal-case text-white">{maxM}m</span>{dm > maxM && <span className="ml-1 text-yellow-400">OUT</span>}</div>
+                            <div className="normal-case text-zinc-400">{l.midpoint !== 'Any' ? l.midpoint : 'Any'}</div>
                           </div>
                         )
                       })()}
