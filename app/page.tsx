@@ -658,6 +658,18 @@ export default function IntelMap() {
 
   // ── route drawing state
   const [routeDrawMode,  setRouteDrawMode]  = React.useState(false)
+
+  // ── drag-to-reposition state
+  const [draggingSpotId,   setDraggingSpotId]   = React.useState<number | string | null>(null)
+  const [draggingSnipeSide,setDraggingSnipeSide] = React.useState<ConeSide | null>(null)
+  const [snipeDragPreview, setSnipeDragPreview]  = React.useState<{ x: number; y: number } | null>(null)
+  // Refs mirror state so event handlers always read the current value without stale closures
+  const draggingSpotIdRef    = React.useRef<number | string | null>(null)
+  const draggingSnipeSideRef = React.useRef<ConeSide | null>(null)
+  // Direct DOM ref for the spot being dragged — bypasses React render cycle for smooth movement
+  const draggedSpotElRef = React.useRef<HTMLElement | null>(null)
+  const dragMoveRef = React.useRef(false)
+  const dragPosRef  = React.useRef<{ x: number; y: number } | null>(null)
   const [drawingPoints,  setDrawingPoints]  = React.useState<RoutePoint[]>([])
   const [newRouteConfig, setNewRouteConfig] = React.useState({
     color:       '#22c55e',
@@ -680,6 +692,8 @@ export default function IntelMap() {
   const [showSatellite,  setShowSatellite]  = React.useState(false)
   const [overlayOpacity, setOverlayOpacity] = React.useState(55)
   const [overlayBroken,  setOverlayBroken]  = React.useState<Record<string, boolean>>({})
+  const [naturalAspect,  setNaturalAspect]  = React.useState<number>(1)
+  const [containerDims,  setContainerDims]  = React.useState<{ w: number; h: number } | null>(null)
 
   // ── lightbox
   const [lightboxImage, setLightboxImage] = React.useState<string | null>(null)
@@ -862,6 +876,8 @@ export default function IntelMap() {
     setRouteDrawMode(false); setDrawingPoints([])
     setActiveMidpoint('All')
     setSelectedRouteId(null)
+    setNaturalAspect(1)
+    setContainerDims(null)
     void currentMap // suppress unused warning
   }, [selectedMapId])
 
@@ -879,6 +895,29 @@ export default function IntelMap() {
   React.useEffect(() => {
     return () => { revokeUrls(newSpot.images) }
   }, [newSpot.images, revokeUrls])
+
+  // ── effects: compute container dimensions from image aspect ratio
+  // Uses window resize instead of ResizeObserver to avoid a feedback loop where
+  // setContainerDims → DOM change → ResizeObserver fires → setContainerDims again.
+  React.useEffect(() => {
+    if (!naturalAspect) return
+    const compute = () => {
+      const vp = viewportRef.current
+      if (!vp) return
+      const parentW = vp.getBoundingClientRect().width
+      const maxH    = window.innerHeight * 0.78
+      const hFromW  = parentW / naturalAspect
+      const next    = hFromW <= maxH
+        ? { w: Math.round(parentW), h: Math.round(hFromW) }
+        : { w: Math.round(maxH * naturalAspect), h: Math.round(maxH) }
+      setContainerDims((prev) =>
+        prev && prev.w === next.w && prev.h === next.h ? prev : next
+      )
+    }
+    compute()
+    window.addEventListener('resize', compute)
+    return () => window.removeEventListener('resize', compute)
+  }, [naturalAspect])
 
   // ── effects: wheel zoom
   React.useEffect(() => {
@@ -962,7 +1001,23 @@ export default function IntelMap() {
   }
 
   const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    // Route drawing
+    // ── Spot drag — update DOM directly, zero React re-renders during drag
+    if (draggingSpotIdRef.current !== null) {
+      const pt = getMapPercent(e); if (!pt) return
+      dragMoveRef.current = true; dragPosRef.current = pt
+      if (draggedSpotElRef.current) {
+        draggedSpotElRef.current.style.left = `${pt.x}%`
+        draggedSpotElRef.current.style.top  = `${pt.y}%`
+      }
+      return
+    }
+    // ── Snipe endpoint drag — update preview state (small, fast re-render)
+    if (draggingSnipeSideRef.current !== null) {
+      const pt = getMapPercent(e); if (!pt) return
+      dragMoveRef.current = true; dragPosRef.current = pt
+      setSnipeDragPreview(pt)
+      return
+    }
     if (isRouteDrawingRef.current) {
       const pt = getMapPercent(e)
       if (pt && lastSampledPointRef.current) {
@@ -990,7 +1045,51 @@ export default function IntelMap() {
   }
 
   const handleMouseUp = () => {
-    // Finish route draw
+    // ── Commit dragged spot position
+    if (draggingSpotIdRef.current !== null) {
+      const id = draggingSpotIdRef.current
+      // Clear direct DOM override — React takes back control with final position
+      if (draggedSpotElRef.current) {
+        draggedSpotElRef.current.style.left = ''
+        draggedSpotElRef.current.style.top  = ''
+        draggedSpotElRef.current = null
+      }
+      if (dragMoveRef.current && dragPosRef.current) {
+        const { x, y } = dragPosRef.current
+        patchSpotInMaps(id, { x, y })
+        setSelectedSpot((prev) => prev && prev.id === id ? { ...prev, x, y } : prev)
+        if (typeof id === 'number') {
+          supabase.from('spots').update({ x, y }).eq('id', id)
+            .then(({ error }) => { if (error) console.error('Spot drag save error:', error) })
+        }
+      }
+      draggingSpotIdRef.current = null
+      setDraggingSpotId(null)
+      dragMoveRef.current = false; dragPosRef.current = null
+      return
+    }
+    // ── Commit dragged snipe line endpoint
+    if (draggingSnipeSideRef.current !== null) {
+      const side = draggingSnipeSideRef.current
+      if (dragMoveRef.current && dragPosRef.current && selectedSpot) {
+        const prevMid = editSpot.fireLines?.[side]?.midpoint || 'Any'
+        const nextLines = cleanupLineSet({
+          ...(editSpot.fireLines || {}),
+          [side]: { endX: dragPosRef.current.x, endY: dragPosRef.current.y, midpoint: prevMid },
+        })
+        setEditSpot((p) => ({ ...p, fireLines: nextLines }))
+        setSelectedSpot((prev) => prev ? { ...prev, fireLines: nextLines } : prev)
+        patchSpotInMaps(selectedSpot.id, { fireLines: nextLines })
+        if (typeof selectedSpot.id === 'number') {
+          supabase.from('spots').update({ fire_lines: nextLines }).eq('id', selectedSpot.id)
+            .then(({ error }) => { if (error) console.error('Snipe drag save error:', error) })
+        }
+      }
+      draggingSnipeSideRef.current = null
+      setDraggingSnipeSide(null); setSnipeDragPreview(null)
+      dragMoveRef.current = false; dragPosRef.current = null
+      return
+    }
     if (isRouteDrawingRef.current) {
       if (drawingPointsRef.current.length >= 2 && selectedSpot) {
         const newRoute: SpotRoute = {
@@ -1326,7 +1425,8 @@ export default function IntelMap() {
   const selectedRouteEmbed = getYouTubeEmbedUrl(selectedRoute?.youtube)
 
   // ── cursor style for map
-  const mapCursor = isDragging ? 'cursor-grabbing'
+  const mapCursor = (draggingSpotId !== null || draggingSnipeSide !== null) ? 'cursor-grabbing'
+    : isDragging ? 'cursor-grabbing'
     : (showAddSpot || placementMode || routeDrawMode) ? 'cursor-crosshair'
     : 'cursor-grab'
 
@@ -1523,22 +1623,33 @@ export default function IntelMap() {
                 )}
               </div>
 
-              {/* Map content */}
-              <div ref={mapContainerRef} className="relative mx-auto aspect-square w-full max-h-[78vh] bg-black/30">
+              {/* Map content — BOTH width and height are set in JS so the container always
+                   exactly matches the image's native aspect ratio on every monitor.
+                   mx-auto centers it when height-constrained (container narrower than parent). */}
+              <div ref={mapContainerRef} className="relative mx-auto bg-black/30"
+                style={{
+                  width:  containerDims ? `${containerDims.w}px` : '100%',
+                  height: containerDims ? `${containerDims.h}px` : '56.25vw',
+                }}>
                 {selectedMap ? (
                   <div className={`absolute inset-0 ${mapCursor}`}
                     onMouseDown={handleMouseDown}
                     onClick={handleMapClick}
                     style={{ transform: `translate(${position.x}px, ${position.y}px) scale(${scale})`, transformOrigin: 'center center' }}>
 
-                    {/* Map image */}
+                    {/* Map image — onLoad captures natural dimensions so ResizeObserver can
+                         compute the exact container height, eliminating any letterboxing */}
                     <img src={selectedMap.image} alt={selectedMap.name}
-                      className="pointer-events-none absolute inset-0 h-full w-full object-contain" draggable={false} />
+                      className="pointer-events-none absolute inset-0 h-full w-full object-fill" draggable={false}
+                      onLoad={(e) => {
+                        const { naturalWidth: nw, naturalHeight: nh } = e.currentTarget
+                        if (nw && nh) setNaturalAspect(nw / nh)
+                      }} />
 
                     {/* Satellite overlay */}
                     {hasSatellite && showSatellite && selectedMap.overlay && (
                       <img src={selectedMap.overlay} alt={`${selectedMap.name} satellite`}
-                        className="pointer-events-none absolute inset-0 h-full w-full object-contain"
+                        className="pointer-events-none absolute inset-0 h-full w-full object-fill"
                         draggable={false} style={{ opacity: overlayOpacity / 100 }}
                         onError={() => setOverlayBroken((p) => ({ ...p, [selectedMap.id]: true }))} />
                     )}
@@ -1560,27 +1671,31 @@ export default function IntelMap() {
                               <ConeShape cx={spot.x} cy={spot.y} cone={spot.cones.Allies} side="Allies" />
                             )}
 
-                            {/* Fire lines */}
+                            {/* Snipe lines */}
                             {showFireLines && roleSupportsLine(primaryRole) && spot.fireLines?.Axis && (() => {
                               const l = spot.fireLines.Axis!
                               if (activeMidpoint !== 'All' && l.midpoint !== 'Any' && l.midpoint !== activeMidpoint) return null
-                              const dm = getDistanceMeters(spot.x, spot.y, l.endX, l.endY)
+                              const endX = (draggingSnipeSide === 'Axis' && snipeDragPreview && editingSpotId === spot.id) ? snipeDragPreview.x : l.endX
+                              const endY = (draggingSnipeSide === 'Axis' && snipeDragPreview && editingSpotId === spot.id) ? snipeDragPreview.y : l.endY
+                              const dm = getDistanceMeters(spot.x, spot.y, endX, endY)
                               const maxM = getMaxRangeMeters(primaryRole, 'Axis')
                               return (
-                                <SnipeLineShape startX={spot.x} startY={spot.y} endX={l.endX} endY={l.endY}
+                                <SnipeLineShape startX={spot.x} startY={spot.y} endX={endX} endY={endY}
                                   side="Axis" distanceM={dm} outOfRange={dm > maxM}
-                                  oob={isOutOfBounds(l.endX, l.endY, mapOrientation)} />
+                                  oob={isOutOfBounds(endX, endY, mapOrientation)} />
                               )
                             })()}
                             {showFireLines && roleSupportsLine(primaryRole) && spot.fireLines?.Allies && (() => {
                               const l = spot.fireLines.Allies!
                               if (activeMidpoint !== 'All' && l.midpoint !== 'Any' && l.midpoint !== activeMidpoint) return null
-                              const dm = getDistanceMeters(spot.x, spot.y, l.endX, l.endY)
+                              const endX = (draggingSnipeSide === 'Allies' && snipeDragPreview && editingSpotId === spot.id) ? snipeDragPreview.x : l.endX
+                              const endY = (draggingSnipeSide === 'Allies' && snipeDragPreview && editingSpotId === spot.id) ? snipeDragPreview.y : l.endY
+                              const dm = getDistanceMeters(spot.x, spot.y, endX, endY)
                               const maxM = getMaxRangeMeters(primaryRole, 'Allies')
                               return (
-                                <SnipeLineShape startX={spot.x} startY={spot.y} endX={l.endX} endY={l.endY}
+                                <SnipeLineShape startX={spot.x} startY={spot.y} endX={endX} endY={endY}
                                   side="Allies" distanceM={dm} outOfRange={dm > maxM}
-                                  oob={isOutOfBounds(l.endX, l.endY, mapOrientation)} />
+                                  oob={isOutOfBounds(endX, endY, mapOrientation)} />
                               )
                             })()}
 
@@ -1616,6 +1731,31 @@ export default function IntelMap() {
                       )}
                     </svg>
 
+                    {/* ── Draggable snipe line endpoint handles (shown during edit) */}
+                    {editingSpotId && selectedSpot && (['Axis', 'Allies'] as ConeSide[]).map((side) => {
+                      const line = editSpot.fireLines?.[side]
+                      if (!line) return null
+                      return (
+                        <div key={`snipe-handle-${side}`}
+                          className="absolute z-10"
+                          style={{
+                            left: `${draggingSnipeSide === side && snipeDragPreview ? snipeDragPreview.x : line.endX}%`,
+                            top:  `${draggingSnipeSide === side && snipeDragPreview ? snipeDragPreview.y : line.endY}%`,
+                            transform: 'translate(-50%,-50%)', cursor: 'move'
+                          }}
+                          onMouseDown={(e) => {
+                            e.stopPropagation()
+                            e.preventDefault()
+                            draggingSnipeSideRef.current = side
+                            setDraggingSnipeSide(side)
+                            dragMoveRef.current = false
+                            dragPosRef.current = null
+                          }}>
+                          <div className={`w-4 h-4 rounded-full border-2 border-white/90 shadow-lg ${side === 'Axis' ? 'bg-red-500' : 'bg-blue-500'}`} />
+                        </div>
+                      )
+                    })}
+
                     {/* ── Spot markers (kept as HTML buttons for click handling) */}
                     {showMarkers && filteredSpots.map((spot) => {
                       const isActive     = selectedSpot?.id === spot.id
@@ -1626,11 +1766,24 @@ export default function IntelMap() {
 
                       return (
                         <button key={spot.id}
-                          onClick={(e) => { e.stopPropagation(); selectSpot(spot) }}
+                          onClick={(e) => { e.stopPropagation(); if (!dragMoveRef.current) selectSpot(spot) }}
+                          onMouseDown={(e) => {
+                            if (editingSpotId === spot.id) {
+                              e.stopPropagation()
+                              e.preventDefault()
+                              draggingSpotIdRef.current = spot.id
+                              draggedSpotElRef.current  = e.currentTarget
+                              setDraggingSpotId(spot.id)
+                              dragMoveRef.current = false
+                              dragPosRef.current  = null
+                            }
+                          }}
                           className="group absolute -translate-x-1/2 -translate-y-1/2"
                           style={{
-                            left: `${spot.x}%`, top: `${spot.y}%`,
+                            left: `${spot.x}%`,
+                            top:  `${spot.y}%`,
                             opacity: spot.pending ? 0.68 : 1,
+                            cursor: editingSpotId === spot.id ? 'move' : undefined,
                             pointerEvents: (placementMode || routeDrawMode) ? 'none' : undefined,
                           }}
                           aria-label={spot.title}>
