@@ -6,6 +6,19 @@ import { supabase } from '@/lib/supabase'
 type SpotSide = 'Axis' | 'Allies' | 'Both'
 type RightTab = 'list' | 'details'
 type MarkerShape = 'circle' | 'square' | 'triangle'
+type ConeSide = 'Axis' | 'Allies'
+type LosFilter = 'all' | 'axis' | 'allies' | 'none'
+
+type SpotCone = {
+  angle: number
+  spread: number
+  length: number
+}
+
+type SpotConeSet = {
+  Axis?: SpotCone | null
+  Allies?: SpotCone | null
+}
 
 type Spot = {
   id: number | string
@@ -20,6 +33,7 @@ type Spot = {
   youtube?: string | null
   images?: string[]
   size: number
+  cones?: SpotConeSet | null
   created_at?: string
   pending?: boolean
 }
@@ -47,6 +61,92 @@ function normalizeSide(side: unknown): SpotSide {
   if (value === 'axis') return 'Axis'
   if (value === 'allies') return 'Allies'
   return 'Both'
+}
+
+function clampSpotSize(size: number) {
+  return Math.max(8, Math.min(20, Number(size || 12)))
+}
+
+function normalizeRoles(raw: any): string[] {
+  if (Array.isArray(raw.roles) && raw.roles.length > 0) {
+    return raw.roles.filter(Boolean)
+  }
+
+  if (typeof raw.role === 'string' && raw.role.trim()) {
+    return [raw.role.trim()]
+  }
+
+  return ['MG']
+}
+
+function normalizeCone(rawCone: any): SpotCone | null {
+  if (!rawCone || typeof rawCone !== 'object') return null
+
+  const angle = Number(rawCone.angle)
+  const spread = Number(rawCone.spread)
+  const length = Number(rawCone.length)
+
+  if (Number.isNaN(angle) || Number.isNaN(spread) || Number.isNaN(length)) {
+    return null
+  }
+
+  return {
+    angle: ((angle % 360) + 360) % 360,
+    spread: Math.max(5, Math.min(180, spread)),
+    length: Math.max(5, Math.min(60, length)),
+  }
+}
+
+function normalizeConeSet(rawCone: any): SpotConeSet | null {
+  if (!rawCone || typeof rawCone !== 'object') return null
+
+  const axis = normalizeCone(rawCone.Axis)
+  const allies = normalizeCone(rawCone.Allies)
+
+  if (!axis && !allies) return null
+
+  return {
+    Axis: axis,
+    Allies: allies,
+  }
+}
+
+function getPrimaryRoleFromSpot(raw: any): string {
+  const roles = normalizeRoles(raw)
+  return roles[0] || 'MG'
+}
+
+function normalizeSpot(raw: any): Spot {
+  const roles = normalizeRoles(raw)
+  return {
+    id: raw.id,
+    map_id: raw.map_id,
+    title: raw.title ?? '',
+    role: getPrimaryRoleFromSpot(raw),
+    roles,
+    side: normalizeSide(raw.side),
+    x: Number(raw.x ?? 0),
+    y: Number(raw.y ?? 0),
+    notes: raw.notes ?? '',
+    youtube: raw.youtube ?? null,
+    images: Array.isArray(raw.images) ? raw.images : [],
+    size: clampSpotSize(raw.size ?? 12),
+    cones: normalizeConeSet(raw.cone),
+    created_at: raw.created_at,
+    pending: false,
+  }
+}
+
+function buildMapsWithSpots(mapsData: any[], spotsData: any[]): MapData[] {
+  const normalizedSpots = (spotsData || []).map(normalizeSpot)
+
+  return (mapsData || []).map((map) => ({
+    id: map.id,
+    name: map.name,
+    image: map.image,
+    overlay: map.overlay,
+    spots: normalizedSpots.filter((spot) => spot.map_id === map.id),
+  }))
 }
 
 function parseIcon(icon?: string | null) {
@@ -82,13 +182,15 @@ function parseIcon(icon?: string | null) {
   }
 }
 
-function getSideClasses(side: SpotSide) {
+function getSideClasses(side: SpotSide | ConeSide) {
   if (side === 'Axis') {
     return {
       marker: 'bg-red-600/95',
       glow: 'bg-red-500',
       badge: 'bg-red-700/90 text-white border border-red-300/40',
       border: 'border-red-300',
+      coneFill: 'rgba(239,68,68,0.28)',
+      coneStroke: 'rgba(255,200,200,0.72)',
     }
   }
 
@@ -98,6 +200,8 @@ function getSideClasses(side: SpotSide) {
       glow: 'bg-blue-500',
       badge: 'bg-blue-700/90 text-white border border-blue-300/40',
       border: 'border-blue-300',
+      coneFill: 'rgba(59,130,246,0.28)',
+      coneStroke: 'rgba(200,230,255,0.72)',
     }
   }
 
@@ -106,6 +210,8 @@ function getSideClasses(side: SpotSide) {
     glow: 'bg-violet-500',
     badge: 'bg-violet-700/90 text-white border border-violet-300/40',
     border: 'border-violet-300',
+    coneFill: 'rgba(139,92,246,0.28)',
+    coneStroke: 'rgba(230,210,255,0.72)',
   }
 }
 
@@ -140,59 +246,6 @@ function getYouTubeEmbedUrl(url?: string | null) {
   }
 }
 
-function clampSpotSize(size: number) {
-  return Math.max(8, Math.min(20, Number(size || 12)))
-}
-
-function normalizeRoles(raw: any): string[] {
-  if (Array.isArray(raw.roles) && raw.roles.length > 0) {
-    return raw.roles.filter(Boolean)
-  }
-
-  if (typeof raw.role === 'string' && raw.role.trim()) {
-    return [raw.role.trim()]
-  }
-
-  return ['MG']
-}
-
-function getPrimaryRoleFromSpot(raw: any): string {
-  const roles = normalizeRoles(raw)
-  return roles[0] || 'MG'
-}
-
-function normalizeSpot(raw: any): Spot {
-  const roles = normalizeRoles(raw)
-  return {
-    id: raw.id,
-    map_id: raw.map_id,
-    title: raw.title ?? '',
-    role: getPrimaryRoleFromSpot(raw),
-    roles,
-    side: normalizeSide(raw.side),
-    x: Number(raw.x ?? 0),
-    y: Number(raw.y ?? 0),
-    notes: raw.notes ?? '',
-    youtube: raw.youtube ?? null,
-    images: Array.isArray(raw.images) ? raw.images : [],
-    size: clampSpotSize(raw.size ?? 12),
-    created_at: raw.created_at,
-    pending: false,
-  }
-}
-
-function buildMapsWithSpots(mapsData: any[], spotsData: any[]): MapData[] {
-  const normalizedSpots = (spotsData || []).map(normalizeSpot)
-
-  return (mapsData || []).map((map) => ({
-    id: map.id,
-    name: map.name,
-    image: map.image,
-    overlay: map.overlay,
-    spots: normalizedSpots.filter((spot) => spot.map_id === map.id),
-  }))
-}
-
 function MarkerIcon({
   icon,
   className = '',
@@ -212,8 +265,7 @@ function MarkerIcon({
         className={`object-contain ${className}`}
         style={{ width: sizePx, height: sizePx }}
         onError={(e) => {
-          const target = e.currentTarget
-          target.style.display = 'none'
+          e.currentTarget.style.display = 'none'
         }}
       />
     )
@@ -271,9 +323,7 @@ function ShapeMarker({
       >
         <span
           className="absolute inset-0"
-          style={{
-            clipPath: 'polygon(50% 6%, 8% 92%, 92% 92%)',
-          }}
+          style={{ clipPath: 'polygon(50% 6%, 8% 92%, 92% 92%)' }}
         >
           <span className={`absolute inset-0 ${sideClass}`} />
           <span
@@ -298,6 +348,77 @@ function ShapeMarker({
   )
 }
 
+function ConeOverlay({
+  x,
+  y,
+  cone,
+  side,
+  preview = false,
+}: {
+  x: number
+  y: number
+  cone: SpotCone
+  side: ConeSide
+  preview?: boolean
+}) {
+  const sideStyles = getSideClasses(side)
+
+  const radius = cone.length * 18
+  const startRad = (-cone.spread / 2) * (Math.PI / 180)
+  const endRad = (cone.spread / 2) * (Math.PI / 180)
+
+  const x1 = radius * Math.cos(startRad)
+  const y1 = radius * Math.sin(startRad)
+  const x2 = radius * Math.cos(endRad)
+  const y2 = radius * Math.sin(endRad)
+
+  const largeArcFlag = cone.spread > 180 ? 1 : 0
+
+  const pathData = [
+    `M 0 0`,
+    `L ${x1} ${y1}`,
+    `A ${radius} ${radius} 0 ${largeArcFlag} 1 ${x2} ${y2}`,
+    `Z`,
+  ].join(' ')
+
+  return (
+    <div
+      className="pointer-events-none absolute"
+      style={{
+        left: `${x}%`,
+        top: `${y}%`,
+        width: 0,
+        height: 0,
+        overflow: 'visible',
+      }}
+    >
+      <svg
+        width={radius * 2}
+        height={radius * 2}
+        viewBox={`${-radius} ${-radius} ${radius * 2} ${radius * 2}`}
+        style={{
+          position: 'absolute',
+          left: `${-radius}px`,
+          top: `${-radius}px`,
+          overflow: 'visible',
+          transform: `rotate(${cone.angle}deg)`,
+          transformOrigin: `${radius}px ${radius}px`,
+          opacity: preview ? 0.95 : 1,
+        }}
+      >
+        <path
+          d={pathData}
+          fill={sideStyles.coneFill}
+          stroke={sideStyles.coneStroke}
+          strokeWidth="2"
+          strokeDasharray={preview ? '6 4' : undefined}
+        />
+        <circle cx="0" cy="0" r="3" fill={sideStyles.coneStroke} />
+      </svg>
+    </div>
+  )
+}
+
 const panelClass =
   'rounded-3xl border border-emerald-400/15 bg-[linear-gradient(180deg,rgba(18,52,29,0.84),rgba(11,28,16,0.9))] shadow-[0_20px_60px_rgba(0,0,0,0.42)] backdrop-blur-xl'
 
@@ -313,6 +434,46 @@ const softButtonClass =
 const tabButtonClass =
   'rounded-2xl px-4 py-2 text-sm font-medium transition'
 
+function computeConeFromEdges(
+  spot: { x: number; y: number },
+  edgeA: { x: number; y: number },
+  edgeB: { x: number; y: number }
+): SpotCone {
+  const sx = spot.x
+  const sy = spot.y
+
+  const dx1 = edgeA.x - sx
+  const dy1 = edgeA.y - sy
+  const dx2 = edgeB.x - sx
+  const dy2 = edgeB.y - sy
+
+  const a1 = Math.atan2(dy1, dx1)
+  const a2 = Math.atan2(dy2, dx2)
+
+  const d1 = Math.sqrt(dx1 * dx1 + dy1 * dy1)
+  const d2 = Math.sqrt(dx2 * dx2 + dy2 * dy2)
+
+  let diff = ((a2 - a1 + Math.PI * 3) % (Math.PI * 2)) - Math.PI
+  const center = a1 + diff / 2
+
+  return {
+    angle: ((center * 180) / Math.PI + 360) % 360,
+    spread: Math.max(5, Math.min(180, Math.abs(diff) * (180 / Math.PI))),
+    length: Math.max(5, Math.min(60, Number(Math.max(d1, d2).toFixed(1)))),
+  }
+}
+
+function cleanupConeSet(cones: SpotConeSet | null | undefined): SpotConeSet | null {
+  if (!cones) return null
+  const axis = cones.Axis ?? null
+  const allies = cones.Allies ?? null
+  if (!axis && !allies) return null
+  return {
+    Axis: axis,
+    Allies: allies,
+  }
+}
+
 export default function IntelMap() {
   const [maps, setMaps] = React.useState<MapData[]>([])
   const [selectedMapId, setSelectedMapId] = React.useState<string>('utah')
@@ -325,6 +486,7 @@ export default function IntelMap() {
     'alphabetical'
   )
   const [searchTerm, setSearchTerm] = React.useState('')
+  const [losFilter, setLosFilter] = React.useState<LosFilter>('all')
   const [showAddSpot, setShowAddSpot] = React.useState(false)
   const [isSavingNewSpot, setIsSavingNewSpot] = React.useState(false)
 
@@ -342,6 +504,16 @@ export default function IntelMap() {
   } | null>(null)
   const [lightboxImage, setLightboxImage] = React.useState<string | null>(null)
   const [isLoading, setIsLoading] = React.useState(true)
+
+  const [conePlacementMode, setConePlacementMode] =
+    React.useState<null | 'first_edge' | 'second_edge'>(null)
+  const [coneDraftSpotId, setConeDraftSpotId] =
+    React.useState<number | string | null>(null)
+  const [coneFirstEdge, setConeFirstEdge] =
+    React.useState<{ x: number; y: number } | null>(null)
+  const [conePreviewPoint, setConePreviewPoint] =
+    React.useState<{ x: number; y: number } | null>(null)
+  const [editingConeSide, setEditingConeSide] = React.useState<ConeSide>('Axis')
 
   const [newSpot, setNewSpot] = React.useState({
     title: '',
@@ -361,6 +533,7 @@ export default function IntelMap() {
     notes: '',
     youtube: '',
     size: 12,
+    cones: null as SpotConeSet | null,
   })
 
   const viewportRef = React.useRef<HTMLDivElement | null>(null)
@@ -399,23 +572,22 @@ export default function IntelMap() {
 
   const getRenderedSpotSize = (spot: Spot) => {
     const primaryRole = spot.roles?.[0] || spot.role || 'MG'
-
-    if (primaryRole === 'Tank') {
-      return Math.max(5, Math.round(spot.size * 0.6))
-    }
-
+    if (primaryRole === 'Tank') return Math.max(5, Math.round(spot.size * 0.6))
     return spot.size
   }
 
   const getRenderedDraftSize = (roles: string[], size: number) => {
     const primaryRole = roles?.[0] || 'MG'
-
-    if (primaryRole === 'Tank') {
-      return Math.max(5, Math.round(size * 0.6))
-    }
-
+    if (primaryRole === 'Tank') return Math.max(5, Math.round(size * 0.6))
     return size
   }
+
+  const availableConeSides: ConeSide[] =
+    editSpot.side === 'Both'
+      ? ['Axis', 'Allies']
+      : editSpot.side === 'Axis'
+      ? ['Axis']
+      : ['Allies']
 
   const filteredSpots = currentSpots.filter((spot) => {
     const roleMatch =
@@ -474,9 +646,7 @@ export default function IntelMap() {
 
   const revokeNewSpotPreviewUrls = React.useCallback((urls: string[]) => {
     urls.forEach((url) => {
-      if (url.startsWith('blob:')) {
-        URL.revokeObjectURL(url)
-      }
+      if (url.startsWith('blob:')) URL.revokeObjectURL(url)
     })
   }, [])
 
@@ -560,8 +730,7 @@ export default function IntelMap() {
           const eventType = payload.eventType
 
           if (eventType === 'INSERT') {
-            const incoming = normalizeSpot(payload.new)
-            addSpotToMaps(incoming)
+            addSpotToMaps(normalizeSpot(payload.new))
           }
 
           if (eventType === 'UPDATE') {
@@ -586,12 +755,8 @@ export default function IntelMap() {
 
           if (eventType === 'DELETE') {
             const deletedId = payload.old.id as number
-
             removeSpotFromMaps(deletedId)
-
-            setSelectedSpot((prev) =>
-              prev && prev.id === deletedId ? null : prev
-            )
+            setSelectedSpot((prev) => (prev && prev.id === deletedId ? null : prev))
           }
         }
       )
@@ -602,7 +767,6 @@ export default function IntelMap() {
     }
   }, [addSpotToMaps, removeSpotFromMaps])
 
-  // Only reset the panel when the map changes, not every time spots change
   React.useEffect(() => {
     const currentMap = maps.find((map) => map.id === selectedMapId)
 
@@ -617,9 +781,12 @@ export default function IntelMap() {
     setShowSatellite(false)
     setEditingSpotId(null)
     setRightTab('list')
+    setConePlacementMode(null)
+    setConeDraftSpotId(null)
+    setConeFirstEdge(null)
+    setConePreviewPoint(null)
   }, [selectedMapId])
 
-  // Keep selected spot synced when maps update, without resetting the whole panel
   React.useEffect(() => {
     const currentMap = maps.find((map) => map.id === selectedMapId)
     if (!currentMap) {
@@ -703,7 +870,33 @@ export default function IntelMap() {
       el.removeEventListener('wheel', handleWheel)
       document.body.style.overflow = previousOverflow
     }
-  }, [scale, clampPosition])
+  }, [scale])
+
+  const getMapPercentFromEvent = (
+    e: React.MouseEvent<HTMLDivElement>
+  ): { x: number; y: number } | null => {
+    if (!viewportRef.current) return null
+
+    const viewportRect = viewportRef.current.getBoundingClientRect()
+    const viewportX = e.clientX - viewportRect.left
+    const viewportY = e.clientY - viewportRect.top
+
+    const baseCenterX = viewportRect.width / 2
+    const baseCenterY = viewportRect.height / 2
+
+    const contentX =
+      (viewportX - position.x - baseCenterX) / scale + baseCenterX
+    const contentY =
+      (viewportY - position.y - baseCenterY) / scale + baseCenterY
+
+    const xPercent = (contentX / viewportRect.width) * 100
+    const yPercent = (contentY / viewportRect.height) * 100
+
+    return {
+      x: Math.max(0, Math.min(100, Number(xPercent.toFixed(2)))),
+      y: Math.max(0, Math.min(100, Number(yPercent.toFixed(2)))),
+    }
+  }
 
   const zoomIn = () => setScale((prev) => Math.min(prev + 0.2, 3))
 
@@ -721,7 +914,7 @@ export default function IntelMap() {
   }
 
   const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (showAddSpot) return
+    if (showAddSpot || conePlacementMode) return
     setIsDragging(true)
     dragRef.current = {
       startX: e.clientX,
@@ -732,6 +925,11 @@ export default function IntelMap() {
   }
 
   const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (conePlacementMode === 'second_edge') {
+      const point = getMapPercentFromEvent(e)
+      if (point) setConePreviewPoint(point)
+    }
+
     if (!isDragging) return
 
     const dx = e.clientX - dragRef.current.startX
@@ -748,32 +946,58 @@ export default function IntelMap() {
   const handleMapClickForPlacement = (
     e: React.MouseEvent<HTMLDivElement>
   ) => {
+    const clickPoint = getMapPercentFromEvent(e)
+    if (!clickPoint) return
+
+    if (conePlacementMode && coneDraftSpotId != null && selectedSpot) {
+      e.preventDefault()
+      e.stopPropagation()
+
+      if (conePlacementMode === 'first_edge') {
+        setConeFirstEdge(clickPoint)
+        setConePreviewPoint(clickPoint)
+        setConePlacementMode('second_edge')
+        return
+      }
+
+      if (conePlacementMode === 'second_edge' && coneFirstEdge) {
+        const nextCone = computeConeFromEdges(
+          { x: selectedSpot.x, y: selectedSpot.y },
+          coneFirstEdge,
+          clickPoint
+        )
+
+        const nextCones = cleanupConeSet({
+          ...(editSpot.cones || {}),
+          [editingConeSide]: nextCone,
+        })
+
+        setEditSpot((prev) => ({
+          ...prev,
+          cones: nextCones,
+        }))
+
+        setSelectedSpot((prev) => (prev ? { ...prev, cones: nextCones } : prev))
+
+        setMaps((prev) =>
+          prev.map((map) => ({
+            ...map,
+            spots: map.spots.map((spot) =>
+              spot.id === selectedSpot.id ? { ...spot, cones: nextCones } : spot
+            ),
+          }))
+        )
+
+        setConePlacementMode(null)
+        setConeDraftSpotId(null)
+        setConeFirstEdge(null)
+        setConePreviewPoint(null)
+        return
+      }
+    }
+
     if (!showAddSpot) return
-    if (!viewportRef.current) return
-
-    const viewportRect = viewportRef.current.getBoundingClientRect()
-
-    const viewportX = e.clientX - viewportRect.left
-    const viewportY = e.clientY - viewportRect.top
-
-    const baseCenterX = viewportRect.width / 2
-    const baseCenterY = viewportRect.height / 2
-
-    const contentX =
-      (viewportX - position.x - baseCenterX) / scale + baseCenterX
-    const contentY =
-      (viewportY - position.y - baseCenterY) / scale + baseCenterY
-
-    const xPercent = (contentX / viewportRect.width) * 100
-    const yPercent = (contentY / viewportRect.height) * 100
-
-    const clampedX = Math.max(0, Math.min(100, xPercent))
-    const clampedY = Math.max(0, Math.min(100, yPercent))
-
-    setPendingPlacement({
-      x: Number(clampedX.toFixed(2)),
-      y: Number(clampedY.toFixed(2)),
-    })
+    setPendingPlacement(clickPoint)
   }
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -829,9 +1053,7 @@ export default function IntelMap() {
       .from('spot-images')
       .upload(safeName, file)
 
-    if (error) {
-      throw error
-    }
+    if (error) throw error
 
     const { data } = supabase.storage
       .from('spot-images')
@@ -876,6 +1098,7 @@ export default function IntelMap() {
       imageFiles: [...newSpot.imageFiles],
       role: primaryRole,
       size: clampSpotSize(newSpot.size),
+      cones: null as SpotConeSet | null,
     }
 
     const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -893,6 +1116,7 @@ export default function IntelMap() {
       x: placement.x,
       y: placement.y,
       size: spotDraft.size,
+      cones: null,
       pending: true,
     }
 
@@ -921,6 +1145,7 @@ export default function IntelMap() {
         x: placement.x,
         y: placement.y,
         size: spotDraft.size,
+        cone: null,
       }
 
       const { data, error } = await supabase
@@ -929,10 +1154,7 @@ export default function IntelMap() {
         .select()
         .single()
 
-      if (error) {
-        console.error('Error saving spot:', JSON.stringify(error, null, 2))
-        throw error
-      }
+      if (error) throw error
 
       const normalizedSavedSpot = normalizeSpot(data)
       replaceSpotInMaps(tempId, normalizedSavedSpot)
@@ -952,6 +1174,10 @@ export default function IntelMap() {
   const startEditingSpot = () => {
     if (!selectedSpot || selectedSpot.pending || typeof selectedSpot.id !== 'number') return
 
+    const initialSide: ConeSide =
+      selectedSpot.side === 'Allies' ? 'Allies' : 'Axis'
+
+    setEditingConeSide(initialSide)
     setEditingSpotId(selectedSpot.id)
     setEditSpot({
       title: selectedSpot.title,
@@ -960,6 +1186,7 @@ export default function IntelMap() {
       notes: selectedSpot.notes,
       youtube: selectedSpot.youtube || '',
       size: clampSpotSize(selectedSpot.size),
+      cones: selectedSpot.cones || null,
     })
     setRightTab('details')
   }
@@ -968,6 +1195,7 @@ export default function IntelMap() {
     if (!selectedSpot || selectedSpot.pending || typeof selectedSpot.id !== 'number') return
 
     const primaryRole = editSpot.roles[0] || 'MG'
+    const cleanedCones = cleanupConeSet(editSpot.cones)
 
     const { error } = await supabase
       .from('spots')
@@ -979,6 +1207,7 @@ export default function IntelMap() {
         notes: editSpot.notes.trim(),
         youtube: editSpot.youtube.trim() || null,
         size: clampSpotSize(editSpot.size),
+        cone: cleanedCones,
       })
       .eq('id', selectedSpot.id)
 
@@ -988,6 +1217,10 @@ export default function IntelMap() {
     }
 
     setEditingSpotId(null)
+    setConePlacementMode(null)
+    setConeDraftSpotId(null)
+    setConeFirstEdge(null)
+    setConePreviewPoint(null)
   }
 
   const deleteSelectedSpot = async () => {
@@ -998,9 +1231,7 @@ export default function IntelMap() {
       .delete()
       .eq('id', selectedSpot.id)
 
-    if (error) {
-      console.error('Error deleting spot:', error)
-    }
+    if (error) console.error('Error deleting spot:', error)
   }
 
   const updateSelectedSpotSize = async (newSize: number) => {
@@ -1024,12 +1255,9 @@ export default function IntelMap() {
       .update({ size: newSize })
       .eq('id', selectedSpot.id)
 
-    if (error) {
-      console.error('Error updating spot size:', error)
-    }
+    if (error) console.error('Error updating spot size:', error)
   }
 
-  // live preview while editing
   const updateEditSpotSize = (newSize: number) => {
     const clamped = clampSpotSize(newSize)
 
@@ -1052,6 +1280,45 @@ export default function IntelMap() {
     )
   }
 
+  const beginConePlacement = () => {
+    if (!selectedSpot || selectedSpot.pending || typeof selectedSpot.id !== 'number') return
+    setConeDraftSpotId(selectedSpot.id)
+    setConePlacementMode('first_edge')
+    setConeFirstEdge(null)
+    setConePreviewPoint(null)
+    setRightTab('details')
+  }
+
+  const clearCone = () => {
+    if (!selectedSpot) return
+
+    const nextCones = cleanupConeSet({
+      ...(editSpot.cones || {}),
+      [editingConeSide]: null,
+    })
+
+    setEditSpot((prev) => ({
+      ...prev,
+      cones: nextCones,
+    }))
+
+    setSelectedSpot((prev) => (prev ? { ...prev, cones: nextCones } : prev))
+
+    setMaps((prev) =>
+      prev.map((map) => ({
+        ...map,
+        spots: map.spots.map((spot) =>
+          spot.id === selectedSpot.id ? { ...spot, cones: nextCones } : spot
+        ),
+      }))
+    )
+
+    setConePlacementMode(null)
+    setConeDraftSpotId(null)
+    setConeFirstEdge(null)
+    setConePreviewPoint(null)
+  }
+
   const cancelEditSpot = () => {
     if (selectedSpot && typeof selectedSpot.id === 'number') {
       const currentMap = maps.find((map) => map.id === selectedMapId)
@@ -1062,6 +1329,10 @@ export default function IntelMap() {
     }
 
     setEditingSpotId(null)
+    setConePlacementMode(null)
+    setConeDraftSpotId(null)
+    setConeFirstEdge(null)
+    setConePreviewPoint(null)
   }
 
   const openAddSpot = () => {
@@ -1086,7 +1357,26 @@ export default function IntelMap() {
     setShowAddSpot(false)
     setEditingSpotId(null)
     setRightTab('details')
+    setConePlacementMode(null)
+    setConeDraftSpotId(null)
+    setConeFirstEdge(null)
+    setConePreviewPoint(null)
   }
+
+  const previewCone =
+    selectedSpot &&
+    conePlacementMode === 'second_edge' &&
+    coneFirstEdge &&
+    conePreviewPoint
+      ? computeConeFromEdges(
+          { x: selectedSpot.x, y: selectedSpot.y },
+          coneFirstEdge,
+          conePreviewPoint
+        )
+      : null
+
+  const currentEditingCone =
+    editSpot.cones?.[editingConeSide] || null
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(16,185,129,0.14),transparent_32%),linear-gradient(180deg,#060906_0%,#0a0f0b_100%)] text-white">
@@ -1101,7 +1391,7 @@ export default function IntelMap() {
           </div>
         </div>
 
-        <div className="sticky top-[94px] z-30 mb-4 grid gap-3 rounded-[28px] border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.92),rgba(8,20,12,0.88))] p-4 shadow-[0_20px_60px_rgba(0,0,0,0.45)] backdrop-blur-xl md:grid-cols-2 xl:grid-cols-6">
+        <div className="sticky top-[94px] z-30 mb-4 grid gap-3 rounded-[28px] border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.92),rgba(8,20,12,0.88))] p-4 shadow-[0_20px_60px_rgba(0,0,0,0.45)] backdrop-blur-xl md:grid-cols-2 xl:grid-cols-7">
           <div>
             <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">
               Map
@@ -1149,6 +1439,24 @@ export default function IntelMap() {
 
           <div>
             <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">
+              LOS Display
+            </label>
+            <select
+              value={losFilter}
+              onChange={(e) =>
+                setLosFilter(e.target.value as LosFilter)
+              }
+              className={inputClass}
+            >
+              <option value="all">All LOS</option>
+              <option value="axis">Axis LOS</option>
+              <option value="allies">Allies LOS</option>
+              <option value="none">No LOS</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">
               Sort List
             </label>
             <select
@@ -1189,6 +1497,8 @@ export default function IntelMap() {
                 <p className="mt-1 text-sm text-zinc-400">
                   Scroll to zoom, drag to pan
                   {showAddSpot ? ' • Click map to place a new spot' : ''}
+                  {conePlacementMode === 'first_edge' ? ` • Click first ${editingConeSide} cone edge` : ''}
+                  {conePlacementMode === 'second_edge' ? ` • Move mouse to preview ${editingConeSide} cone, click second edge` : ''}
                   {hasSatellite && showSatellite ? ' • Satellite overlay active' : ''}
                 </p>
               </div>
@@ -1274,7 +1584,7 @@ export default function IntelMap() {
                     className={`absolute inset-0 ${
                       isDragging
                         ? 'cursor-grabbing'
-                        : showAddSpot
+                        : showAddSpot || conePlacementMode
                         ? 'cursor-crosshair'
                         : 'cursor-grab'
                     }`}
@@ -1317,53 +1627,82 @@ export default function IntelMap() {
                       const outerSize = `${renderedSize}px`
 
                       return (
-                        <button
-                          key={spot.id}
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            selectSpot(spot)
-                          }}
-                          className="group absolute -translate-x-1/2 -translate-y-1/2"
-                          style={{
-                            left: `${spot.x}%`,
-                            top: `${spot.y}%`,
-                            opacity: spot.pending ? 0.68 : 1,
-                          }}
-                          aria-label={spot.title}
-                        >
-                          <span
-                            className={`absolute inset-0 blur-sm opacity-70 ${sideStyles.glow} ${
-                              shape === 'circle'
-                                ? 'rounded-full'
-                                : shape === 'square'
-                                ? 'rounded-[6px]'
-                                : ''
-                            }`}
-                            style={{
-                              width: outerSize,
-                              height: outerSize,
-                              clipPath:
-                                shape === 'triangle'
-                                  ? 'polygon(50% 6%, 8% 92%, 92% 92%)'
-                                  : undefined,
-                            }}
-                          />
-                          <ShapeMarker
-                            shape={shape}
-                            sideClass={spot.pending ? 'bg-emerald-500/90' : sideStyles.marker}
-                            borderClass={spot.pending ? 'border-emerald-200' : sideStyles.border}
-                            icon={getRoleIcon(primaryRole)}
-                            size={renderedSize}
-                            isActive={isActive}
-                          />
-                          {spot.pending && (
-                            <span className="pointer-events-none absolute left-1/2 top-full mt-1 -translate-x-1/2 whitespace-nowrap rounded-full border border-emerald-300/20 bg-emerald-950/90 px-2 py-0.5 text-[10px] uppercase tracking-[0.18em] text-emerald-100">
-                              Saving
-                            </span>
+                        <React.Fragment key={spot.id}>
+                          {losFilter !== 'none' && spot.cones?.Axis && (losFilter === 'all' || losFilter === 'axis') && (
+                            <ConeOverlay
+                              x={spot.x}
+                              y={spot.y}
+                              cone={spot.cones.Axis}
+                              side="Axis"
+                            />
                           )}
-                        </button>
+
+                          {losFilter !== 'none' && spot.cones?.Allies && (losFilter === 'all' || losFilter === 'allies') && (
+                            <ConeOverlay
+                              x={spot.x}
+                              y={spot.y}
+                              cone={spot.cones.Allies}
+                              side="Allies"
+                            />
+                          )}
+
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              selectSpot(spot)
+                            }}
+                            className="group absolute -translate-x-1/2 -translate-y-1/2"
+                            style={{
+                              left: `${spot.x}%`,
+                              top: `${spot.y}%`,
+                              opacity: spot.pending ? 0.68 : 1,
+                            }}
+                            aria-label={spot.title}
+                          >
+                            <span
+                              className={`absolute inset-0 blur-sm opacity-70 ${sideStyles.glow} ${
+                                shape === 'circle'
+                                  ? 'rounded-full'
+                                  : shape === 'square'
+                                  ? 'rounded-[6px]'
+                                  : ''
+                              }`}
+                              style={{
+                                width: outerSize,
+                                height: outerSize,
+                                clipPath:
+                                  shape === 'triangle'
+                                    ? 'polygon(50% 6%, 8% 92%, 92% 92%)'
+                                    : undefined,
+                              }}
+                            />
+                            <ShapeMarker
+                              shape={shape}
+                              sideClass={spot.pending ? 'bg-emerald-500/90' : sideStyles.marker}
+                              borderClass={spot.pending ? 'border-emerald-200' : sideStyles.border}
+                              icon={getRoleIcon(primaryRole)}
+                              size={renderedSize}
+                              isActive={isActive}
+                            />
+                            {spot.pending && (
+                              <span className="pointer-events-none absolute left-1/2 top-full mt-1 -translate-x-1/2 whitespace-nowrap rounded-full border border-emerald-300/20 bg-emerald-950/90 px-2 py-0.5 text-[10px] uppercase tracking-[0.18em] text-emerald-100">
+                                Saving
+                              </span>
+                            )}
+                          </button>
+                        </React.Fragment>
                       )
                     })}
+
+                    {previewCone && selectedSpot && (
+                      <ConeOverlay
+                        x={selectedSpot.x}
+                        y={selectedSpot.y}
+                        cone={previewCone}
+                        side={editingConeSide}
+                        preview
+                      />
+                    )}
 
                     {pendingPlacement && (
                       <div
@@ -1420,7 +1759,11 @@ export default function IntelMap() {
                 </div>
 
                 <span className="text-xs uppercase tracking-[0.22em] text-zinc-500">
-                  {rightTab === 'list'
+                  {conePlacementMode === 'first_edge'
+                    ? `Pick ${editingConeSide} 1st Edge`
+                    : conePlacementMode === 'second_edge'
+                    ? `Pick ${editingConeSide} 2nd Edge`
+                    : rightTab === 'list'
                     ? `${sortedSpots.length} Spots`
                     : showAddSpot
                     ? 'New Spot'
@@ -1441,6 +1784,8 @@ export default function IntelMap() {
                       const sideStyles = getSideClasses(spot.side)
                       const primaryRole = spot.roles?.[0] || spot.role || 'MG'
                       const listSize = Math.max(12, getRenderedSpotSize(spot))
+                      const hasAxisCone = !!spot.cones?.Axis
+                      const hasAlliesCone = !!spot.cones?.Allies
 
                       return (
                         <button
@@ -1470,10 +1815,22 @@ export default function IntelMap() {
                               </span>
                             )}
                           </div>
-                          <div className="mt-2 flex items-center gap-2 text-[11px] uppercase tracking-[0.2em] text-zinc-500">
+                          <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-[0.2em] text-zinc-500">
                             <span>{spot.roles.join(', ')}</span>
                             <span>•</span>
                             <span>{spot.side}</span>
+                            {hasAxisCone && (
+                              <>
+                                <span>•</span>
+                                <span>Axis LOS</span>
+                              </>
+                            )}
+                            {hasAlliesCone && (
+                              <>
+                                <span>•</span>
+                                <span>Allies LOS</span>
+                              </>
+                            )}
                           </div>
                         </button>
                       )
@@ -1705,12 +2062,17 @@ export default function IntelMap() {
 
                   <select
                     value={editSpot.side}
-                    onChange={(e) =>
+                    onChange={(e) => {
+                      const nextSide = e.target.value as SpotSide
+                      const nextEditingConeSide: ConeSide =
+                        nextSide === 'Allies' ? 'Allies' : 'Axis'
+
                       setEditSpot((prev) => ({
                         ...prev,
-                        side: e.target.value as SpotSide,
+                        side: nextSide,
                       }))
-                    }
+                      setEditingConeSide(nextEditingConeSide)
+                    }}
                     className={inputClass}
                   >
                     <option value="Axis">Axis</option>
@@ -1733,6 +2095,50 @@ export default function IntelMap() {
                       />
                       <span className="w-8 text-xs text-zinc-300">{clampSpotSize(editSpot.size)}</span>
                     </div>
+                  </div>
+
+                  <div className="rounded-[22px] border border-emerald-400/10 bg-emerald-950/18 p-3">
+                    <div className="mb-3 flex flex-wrap gap-2">
+                      {availableConeSides.map((side) => (
+                        <button
+                          key={side}
+                          onClick={() => setEditingConeSide(side)}
+                          className={`rounded-2xl px-3 py-2 text-sm font-medium transition ${
+                            editingConeSide === side
+                              ? side === 'Axis'
+                                ? 'border border-red-300/30 bg-red-600/80 text-white'
+                                : 'border border-blue-300/30 bg-blue-600/80 text-white'
+                              : 'border border-emerald-300/15 bg-emerald-900/35 text-emerald-50 hover:bg-emerald-800/55'
+                          }`}
+                        >
+                          {side} LOS
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      <button onClick={beginConePlacement} className={softButtonClass}>
+                        {conePlacementMode ? `Placing ${editingConeSide} LOS...` : `Mark ${editingConeSide} LOS`}
+                      </button>
+                      <button onClick={clearCone} className={softButtonClass}>
+                        Clear {editingConeSide} LOS
+                      </button>
+                    </div>
+
+                    <div className="mt-3 text-sm text-zinc-400">
+                      {conePlacementMode === 'first_edge' && `Click the first outer edge of the ${editingConeSide} cone.`}
+                      {conePlacementMode === 'second_edge' && `Move the mouse to preview the ${editingConeSide} cone, then click the opposite edge.`}
+                      {!conePlacementMode && currentEditingCone && `${editingConeSide} LOS is set for this spot.`}
+                      {!conePlacementMode && !currentEditingCone && `No ${editingConeSide} LOS set yet.`}
+                    </div>
+
+                    {currentEditingCone && (
+                      <div className="mt-3 grid grid-cols-3 gap-2 text-xs uppercase tracking-[0.16em] text-zinc-400">
+                        <div>Dir: <span className="normal-case tracking-normal text-white">{Math.round(currentEditingCone.angle)}°</span></div>
+                        <div>Spread: <span className="normal-case tracking-normal text-white">{Math.round(currentEditingCone.spread)}°</span></div>
+                        <div>Length: <span className="normal-case tracking-normal text-white">{currentEditingCone.length}</span></div>
+                      </div>
+                    )}
                   </div>
 
                   <textarea
@@ -1811,6 +2217,18 @@ export default function IntelMap() {
                       {selectedSpot.side}
                     </span>
 
+                    {selectedSpot.cones?.Axis && (
+                      <span className="rounded-full border border-red-300/15 bg-red-900/35 px-3 py-1 text-white">
+                        Axis LOS
+                      </span>
+                    )}
+
+                    {selectedSpot.cones?.Allies && (
+                      <span className="rounded-full border border-blue-300/15 bg-blue-900/35 px-3 py-1 text-white">
+                        Allies LOS
+                      </span>
+                    )}
+
                     <span className="inline-flex items-center rounded-full bg-emerald-900/45 px-3 py-1 text-white normal-case tracking-normal">
                       <MarkerIcon icon={getRoleIcon(selectedSpot.roles?.[0] || selectedSpot.role || 'MG')} sizePx={16} />
                     </span>
@@ -1845,6 +2263,28 @@ export default function IntelMap() {
                         />
                         <span className="w-8 text-xs text-zinc-300">{clampSpotSize(selectedSpot.size)}</span>
                       </div>
+                    </div>
+                  )}
+
+                  {(selectedSpot.cones?.Axis || selectedSpot.cones?.Allies) && (
+                    <div className="mt-4 rounded-[22px] border border-emerald-400/10 bg-emerald-950/18 p-3 text-sm text-zinc-300">
+                      <div className="font-medium text-white">Line of Sight Cones</div>
+
+                      {selectedSpot.cones?.Axis && (
+                        <div className="mt-3 grid grid-cols-3 gap-2 text-xs uppercase tracking-[0.18em] text-zinc-400">
+                          <div className="text-red-300">Axis Dir: <span className="text-white normal-case tracking-normal">{Math.round(selectedSpot.cones.Axis.angle)}°</span></div>
+                          <div className="text-red-300">Axis Spread: <span className="text-white normal-case tracking-normal">{Math.round(selectedSpot.cones.Axis.spread)}°</span></div>
+                          <div className="text-red-300">Axis Length: <span className="text-white normal-case tracking-normal">{selectedSpot.cones.Axis.length}</span></div>
+                        </div>
+                      )}
+
+                      {selectedSpot.cones?.Allies && (
+                        <div className="mt-3 grid grid-cols-3 gap-2 text-xs uppercase tracking-[0.18em] text-zinc-400">
+                          <div className="text-blue-300">Allies Dir: <span className="text-white normal-case tracking-normal">{Math.round(selectedSpot.cones.Allies.angle)}°</span></div>
+                          <div className="text-blue-300">Allies Spread: <span className="text-white normal-case tracking-normal">{Math.round(selectedSpot.cones.Allies.spread)}°</span></div>
+                          <div className="text-blue-300">Allies Length: <span className="text-white normal-case tracking-normal">{selectedSpot.cones.Allies.length}</span></div>
+                        </div>
+                      )}
                     </div>
                   )}
 
