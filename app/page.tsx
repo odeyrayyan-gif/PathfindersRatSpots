@@ -748,6 +748,13 @@ export default function IntelMap() {
   const spotListRef      = React.useRef<HTMLDivElement | null>(null) // scrollable spot list
   const spotItemRefs     = React.useRef<Map<number | string, HTMLDivElement>>(new Map()) // per-spot card refs
   const dragRef = React.useRef({ startX: 0, startY: 0, originX: 0, originY: 0 })
+  // Header refs — dynamic sticky top values so small monitors don't get offset jumps
+  const logoBarRef    = React.useRef<HTMLDivElement | null>(null)
+  const filterRow1Ref = React.useRef<HTMLDivElement | null>(null)
+  const filterRow2Ref = React.useRef<HTMLDivElement | null>(null)
+  const [row1Top,  setRow1Top]  = React.useState(94)
+  const [row2Top,  setRow2Top]  = React.useState(178)
+  const [panelTop, setPanelTop] = React.useState(268)
 
   // ── derived values
   const selectedMap     = maps.find((m) => m.id === selectedMapId) || null
@@ -972,9 +979,31 @@ export default function IntelMap() {
       )
     }
     compute()
-    window.addEventListener('resize', compute)
-    return () => window.removeEventListener('resize', compute)
+    let debounceTimer: ReturnType<typeof setTimeout>
+    const debouncedCompute = () => {
+      clearTimeout(debounceTimer)
+      debounceTimer = setTimeout(compute, 50)
+    }
+    window.addEventListener('resize', debouncedCompute)
+    return () => { window.removeEventListener('resize', debouncedCompute); clearTimeout(debounceTimer) }
   }, [naturalAspect])
+
+  // ── effects: measure header heights for accurate sticky positioning
+  // Hardcoded px values break on small monitors when headers wrap to different heights.
+  React.useEffect(() => {
+    const measure = () => {
+      const logoH  = logoBarRef.current?.offsetHeight  ?? 0
+      const r1H    = filterRow1Ref.current?.offsetHeight ?? 0
+      const r2H    = filterRow2Ref.current?.offsetHeight ?? 0
+      const gap    = 16 // mb-4 gap between elements
+      setRow1Top(logoH + gap)
+      setRow2Top(logoH + r1H + gap * 2)
+      setPanelTop(logoH + r1H + r2H + gap * 3)
+    }
+    measure()
+    window.addEventListener('resize', measure)
+    return () => window.removeEventListener('resize', measure)
+  }, [])
 
   // ── effects: wheel zoom
   React.useEffect(() => {
@@ -988,16 +1017,21 @@ export default function IntelMap() {
       const mc   = mapContainerRef.current
       if (!mc) return
       const rect = mc.getBoundingClientRect()
-      const mX   = e.clientX - rect.left
-      const mY   = e.clientY - rect.top
+
+      // Mouse position relative to the container's center
+      const cX  = rect.width  / 2
+      const cY  = rect.height / 2
+      const mX  = e.clientX - rect.left - cX  // offset from center
+      const mY  = e.clientY - rect.top  - cY  // offset from center
+
       setScale((prevScale) => {
         const next      = e.deltaY < 0 ? Math.min(prevScale + 0.12, 8) : Math.max(prevScale - 0.12, 1)
         const zoomRatio = next / prevScale
         setPosition((prevPos) => {
-          const cX   = rect.width  / 2
-          const cY   = rect.height / 2
-          const nx   = prevPos.x - (mX - cX) * (zoomRatio - 1)
-          const ny   = prevPos.y - (mY - cY) * (zoomRatio - 1)
+          // The point under the cursor must stay fixed:
+          // newPos = prevPos - mouseOffset * (zoomRatio - 1)
+          const nx   = prevPos.x - mX * (zoomRatio - 1)
+          const ny   = prevPos.y - mY * (zoomRatio - 1)
           const maxX = ((next - 1) * rect.width)  / 2
           const maxY = ((next - 1) * rect.height) / 2
           return { x: Math.max(-maxX, Math.min(maxX, nx)), y: Math.max(-maxY, Math.min(maxY, ny)) }
@@ -1649,7 +1683,7 @@ export default function IntelMap() {
       <div className="mx-auto max-w-[1800px] px-4 pb-6 pt-3 md:px-6">
 
         {/* ── Logo bar */}
-        <div className="sticky top-0 z-40 mb-4 overflow-hidden rounded-[28px] border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.92),rgba(8,20,12,0.88))] shadow-[0_20px_60px_rgba(0,0,0,0.45)] backdrop-blur-xl">
+        <div ref={logoBarRef} className="sticky top-0 z-40 mb-4 overflow-hidden rounded-[28px] border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.92),rgba(8,20,12,0.88))] shadow-[0_20px_60px_rgba(0,0,0,0.45)] backdrop-blur-xl">
           <div className="flex items-center justify-center px-4 py-3 md:py-4">
             <img src="/pathfinders-logo.png" alt="Pathfinders"
               className="max-h-[65px] w-auto object-contain md:max-h-[85px]" />
@@ -1657,7 +1691,8 @@ export default function IntelMap() {
         </div>
 
         {/* ── Row 1: filters */}
-        <div className="sticky top-[94px] z-30 mb-2 rounded-[28px] border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.92),rgba(8,20,12,0.88))] p-4 shadow-[0_20px_60px_rgba(0,0,0,0.45)] backdrop-blur-xl">
+        <div ref={filterRow1Ref} className="sticky z-30 mb-2 rounded-[28px] border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.92),rgba(8,20,12,0.88))] p-4 shadow-[0_20px_60px_rgba(0,0,0,0.45)] backdrop-blur-xl"
+          style={{ top: `${row1Top}px` }}>
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-8">
             {/* Map selector */}
             <div>
@@ -1742,7 +1777,8 @@ export default function IntelMap() {
         </div>
 
         {/* ── Row 2: layer toggles */}
-        <div className="sticky top-[178px] z-30 mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-[24px] border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.92),rgba(8,20,12,0.88))] px-4 py-3 shadow-[0_12px_40px_rgba(0,0,0,0.40)] backdrop-blur-xl">
+        <div ref={filterRow2Ref} className="sticky z-30 mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-[24px] border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.92),rgba(8,20,12,0.88))] px-4 py-3 shadow-[0_12px_40px_rgba(0,0,0,0.40)] backdrop-blur-xl"
+          style={{ top: `${row2Top}px` }}>
           <span className="text-[10px] uppercase tracking-[0.30em] text-zinc-500">Layers</span>
           {/* Markers */}
           <button onClick={() => setShowMarkers((p) => !p)}
@@ -1878,7 +1914,7 @@ export default function IntelMap() {
                   <div className={`absolute inset-0 ${mapCursor}`}
                     onMouseDown={handleMouseDown}
                     onClick={handleMapClick}
-                    style={{ transform: `translate(${position.x}px, ${position.y}px) scale(${scale})`, transformOrigin: 'center center' }}>
+                    style={{ transform: `translate(${position.x}px, ${position.y}px) scale(${scale})`, transformOrigin: 'center center', willChange: 'transform' }}>
 
                     {/* Map image — onLoad captures natural dimensions so ResizeObserver can
                          compute the exact container height, eliminating any letterboxing */}
@@ -2065,7 +2101,7 @@ export default function IntelMap() {
           </div>
 
           {/* ── Right panel — always shows spot list; selected spot expands inline */}
-          <div className="xl:sticky xl:top-[268px] xl:self-start">
+          <div className="xl:sticky xl:self-start" style={{ top: `${panelTop}px` }}>
             <div className={`${panelClass} p-4 md:p-5`}>
 
               {/* Header */}
