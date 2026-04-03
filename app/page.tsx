@@ -6,7 +6,6 @@ import { supabase } from '@/lib/supabase'
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
 type SpotSide = 'Axis' | 'Allies' | 'Both'
-type RightTab = 'list' | 'details'
 type MarkerShape = 'circle' | 'square' | 'triangle'
 type ConeSide = 'Axis' | 'Allies'
 type SpotSideFilter = 'both' | 'axis' | 'allies'
@@ -64,6 +63,7 @@ type Spot = {
   youtube?: string | null
   images?: string[]
   size: number
+  requiresBuildable: boolean
   cones?: SpotConeSet | null
   fireLines?: SpotLineSet | null
   routes?: SpotRoute[]
@@ -271,6 +271,7 @@ function normalizeSpot(raw: any): Spot {
     youtube:    raw.youtube ?? null,
     images:     Array.isArray(raw.images) ? raw.images : [],
     size:       clampSpotSize(raw.size ?? 12),
+    requiresBuildable: Boolean(raw.requires_buildable),
     cones:      normalizeConeSet(raw.cone),
     fireLines:  normalizeLineSet(raw.fire_lines),
     routes:     normalizeRoutes(raw.routes),
@@ -555,7 +556,7 @@ function ShapeMarker({ shape, sideClass, borderClass, icon, size, isActive }: {
   icon: string; size: number; isActive: boolean
 }) {
   const common = `relative flex items-center justify-center ${sideClass} ` +
-    (isActive ? 'scale-125' : 'group-hover:scale-110')
+    (isActive ? 'scale-150 ring-2 ring-white ring-offset-1 ring-offset-transparent' : 'group-hover:scale-110')
 
   if (shape === 'square') {
     return (
@@ -591,7 +592,6 @@ const panelClass      = 'rounded-3xl border border-emerald-400/15 bg-[linear-gra
 const inputClass      = 'w-full rounded-2xl border border-emerald-300/15 bg-emerald-950/35 px-3 py-2.5 text-sm text-white outline-none transition placeholder:text-emerald-100/30 focus:border-emerald-300/50 focus:bg-emerald-950/50'
 const buttonClass     = 'rounded-2xl border border-emerald-300/25 bg-emerald-600/90 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-emerald-500 hover:border-emerald-200/40'
 const softButtonClass = 'rounded-2xl border border-emerald-300/15 bg-emerald-900/40 px-4 py-2.5 text-sm font-medium text-emerald-50 transition hover:bg-emerald-800/55'
-const tabButtonClass  = 'rounded-2xl px-4 py-2 text-sm font-medium transition'
 const tinyInputClass  = 'rounded-xl border border-emerald-300/15 bg-emerald-950/35 px-2 py-1.5 text-xs text-white outline-none transition focus:border-emerald-300/50'
 
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
@@ -605,12 +605,12 @@ export default function IntelMap() {
   // ── selection state
   const [selectedSpot,   setSelectedSpot]   = React.useState<Spot | null>(null)
   const [editingSpotId,  setEditingSpotId]  = React.useState<number | null>(null)
-  const [rightTab,       setRightTab]       = React.useState<RightTab>('list')
   const [selectedRouteId,setSelectedRouteId]= React.useState<string | null>(null)
 
   // ── list filter state
-  const [roleFilter,      setRoleFilter]      = React.useState<string>('All')
-  const [spotSideFilter,  setSpotSideFilter]  = React.useState<SpotSideFilter>('both')
+  const [roleFilters,     setRoleFilters]     = React.useState<Set<string>>(new Set())  // empty = all
+  const [sideFilters,     setSideFilters]     = React.useState<Set<string>>(new Set())  // empty = all
+  const [buildableFilter, setBuildableFilter] = React.useState(false) // true = only show buildable spots
   const [sortMode,        setSortMode]        = React.useState<'alphabetical' | 'role'>('alphabetical')
   const [searchTerm,      setSearchTerm]      = React.useState('')
   const [activeMidpoint,  setActiveMidpoint]  = React.useState('All') // session-only, resets on map change
@@ -632,12 +632,14 @@ export default function IntelMap() {
   const [newSpot,         setNewSpot]         = React.useState({
     title: '', roles: ['MG'] as string[], side: 'Both' as SpotSide,
     notes: '', youtube: '', images: [] as string[], imageFiles: [] as File[], size: 12,
+    requiresBuildable: false,
   })
 
   // ── spot edit state
   const [editSpot, setEditSpot] = React.useState({
     title: '', roles: ['MG'] as string[], side: 'Both' as SpotSide,
     notes: '', youtube: '', size: 12,
+    requiresBuildable: false,
     images:    [] as string[],
     cones:     null as SpotConeSet | null,
     fireLines: null as SpotLineSet | null,
@@ -702,6 +704,8 @@ export default function IntelMap() {
   const viewportRef      = React.useRef<HTMLDivElement | null>(null) // outer overflow div (wheel events)
   const mapContainerRef  = React.useRef<HTMLDivElement | null>(null) // inner aspect-square div (coordinates)
   const fileInputRef     = React.useRef<HTMLInputElement | null>(null)
+  const spotListRef      = React.useRef<HTMLDivElement | null>(null) // scrollable spot list
+  const spotItemRefs     = React.useRef<Map<number | string, HTMLDivElement>>(new Map()) // per-spot card refs
   const dragRef = React.useRef({ startX: 0, startY: 0, originX: 0, originY: 0 })
 
   // ── derived values
@@ -733,20 +737,21 @@ export default function IntelMap() {
   // ── filtered + sorted spots
   const filteredSpots = React.useMemo(() =>
     currentSpots.filter((spot) => {
-      const roleMatch = roleFilter === 'All' || (spot.roles || []).includes(roleFilter)
-      const sideMatch =
-        spotSideFilter === 'both' ||
-        (spotSideFilter === 'axis'   && (spot.side === 'Axis'   || spot.side === 'Both')) ||
-        (spotSideFilter === 'allies' && (spot.side === 'Allies' || spot.side === 'Both'))
+      const roleMatch = roleFilters.size === 0 || (spot.roles || []).some((r) => roleFilters.has(r))
+      const sideMatch = sideFilters.size === 0 ||
+        (sideFilters.has('Axis')   && (spot.side === 'Axis'   || spot.side === 'Both')) ||
+        (sideFilters.has('Allies') && (spot.side === 'Allies' || spot.side === 'Both')) ||
+        (sideFilters.has('Both')   && spot.side === 'Both')
+      const buildMatch = !buildableFilter || spot.requiresBuildable
       const search = searchTerm.trim().toLowerCase()
       const textMatch = search === '' ||
         spot.title.toLowerCase().includes(search) ||
         (spot.roles || []).some((r) => r.toLowerCase().includes(search)) ||
         spot.notes.toLowerCase().includes(search) ||
         spot.side.toLowerCase().includes(search)
-      return roleMatch && sideMatch && textMatch
+      return roleMatch && sideMatch && buildMatch && textMatch
     }),
-  [currentSpots, roleFilter, spotSideFilter, searchTerm])
+  [currentSpots, roleFilters, sideFilters, buildableFilter, searchTerm])
 
   const sortedSpots = React.useMemo(() =>
     [...filteredSpots].sort((a, b) => {
@@ -783,7 +788,7 @@ export default function IntelMap() {
 
   // ── helpers
   const resetNewSpotState = React.useCallback(() => {
-    setNewSpot({ title: '', roles: ['MG'], side: 'Both', notes: '', youtube: '', images: [], imageFiles: [], size: 12 })
+    setNewSpot({ title: '', roles: ['MG'], side: 'Both', notes: '', youtube: '', images: [], imageFiles: [], size: 12, requiresBuildable: false })
     if (fileInputRef.current) fileInputRef.current.value = ''
   }, [])
 
@@ -868,10 +873,10 @@ export default function IntelMap() {
   React.useEffect(() => {
     const currentMap = maps.find((m) => m.id === selectedMapId)
     setSelectedSpot(null)
-    setSearchTerm(''); setRoleFilter('All'); setSortMode('alphabetical')
+    setSearchTerm(''); setRoleFilters(new Set()); setSideFilters(new Set()); setBuildableFilter(false); setSortMode('alphabetical')
     setScale(1); setPosition({ x: 0, y: 0 })
     setShowAddSpot(false); setPendingPlacement(null); setShowSatellite(false)
-    setEditingSpotId(null); setRightTab('list')
+    setEditingSpotId(null)
     setPlacementMode(null); setPlacementSpotId(null); setConeFirstEdge(null); setPreviewPoint(null)
     setRouteDrawMode(false); setDrawingPoints([])
     setActiveMidpoint('All')
@@ -1198,13 +1203,14 @@ export default function IntelMap() {
       title: newSpot.title.trim(), role: primaryRole, roles: newSpot.roles,
       side: newSpot.side, notes: newSpot.notes, youtube: newSpot.youtube.trim() || null,
       images: newSpot.images, x: pendingPlacement.x, y: pendingPlacement.y,
-      size: clampSpotSize(newSpot.size), cones: null, fireLines: null, routes: [], pending: true,
+      size: clampSpotSize(newSpot.size), requiresBuildable: newSpot.requiresBuildable,
+      cones: null, fireLines: null, routes: [], pending: true,
     }
 
     setIsSavingNewSpot(true)
     addSpotToMaps(optimistic)
     setSelectedSpot(optimistic); setShowAddSpot(false); setPendingPlacement(null)
-    setRightTab('details'); resetNewSpotState()
+     resetNewSpotState()
 
     try {
       const uploadedUrls = await Promise.all(newSpot.imageFiles.map(uploadImage))
@@ -1213,7 +1219,8 @@ export default function IntelMap() {
         role: primaryRole, roles: newSpot.roles, side: newSpot.side,
         notes: newSpot.notes.trim(), youtube: newSpot.youtube.trim() || null,
         images: uploadedUrls, x: pendingPlacement.x, y: pendingPlacement.y,
-        size: clampSpotSize(newSpot.size), cone: null, fire_lines: null, routes: [],
+        size: clampSpotSize(newSpot.size), requires_buildable: newSpot.requiresBuildable,
+        cone: null, fire_lines: null, routes: [],
       }).select().single()
       if (error) throw error
       const saved = normalizeSpot(data)
@@ -1242,6 +1249,7 @@ export default function IntelMap() {
       roles: selectedSpot.roles?.length ? selectedSpot.roles : [selectedSpot.role || 'MG'],
       side:  selectedSpot.side, notes: selectedSpot.notes,
       youtube: selectedSpot.youtube || '', size: clampSpotSize(selectedSpot.size),
+      requiresBuildable: selectedSpot.requiresBuildable || false,
       images: selectedSpot.images || [],
       cones: selectedSpot.cones || null, fireLines: selectedSpot.fireLines || null,
       routes: selectedSpot.routes || [],
@@ -1249,7 +1257,7 @@ export default function IntelMap() {
     setEditSpotNewFiles([])
     setEditSpotNewPreviews([])
     if (editFileInputRef.current) editFileInputRef.current.value = ''
-    setRightTab('details')
+    
   }
 
   const saveEditedSpot = async () => {
@@ -1271,6 +1279,7 @@ export default function IntelMap() {
       title: editSpot.title.trim(), role: primaryRole, roles: editSpot.roles,
       side: editSpot.side, notes: editSpot.notes.trim(),
       youtube: editSpot.youtube.trim() || null, size: clampSpotSize(editSpot.size),
+      requires_buildable: editSpot.requiresBuildable,
       images: finalImages,
       cone: cleanedCones, fire_lines: cleanedLines, routes: cleanedRoutes,
     }).eq('id', selectedSpot.id)
@@ -1289,7 +1298,7 @@ export default function IntelMap() {
     const deletedId = selectedSpot.id
     setSelectedSpot(null)
     setEditingSpotId(null)
-    setRightTab('list')
+    
     removeSpotFromMaps(deletedId)
     const { error } = await supabase.from('spots').delete().eq('id', deletedId)
     if (error) {
@@ -1297,6 +1306,50 @@ export default function IntelMap() {
       // Re-fetch to restore state if the DB delete failed
       const { data } = await supabase.from('spots').select('*').eq('id', deletedId).single()
       if (data) addSpotToMaps(normalizeSpot(data))
+    }
+  }
+
+  const copySelectedSpot = async () => {
+    if (!selectedSpot || selectedSpot.pending || typeof selectedSpot.id !== 'number') return
+    const offset = 1.5
+    const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const optimistic: Spot = {
+      ...selectedSpot,
+      id: tempId,
+      title: `${selectedSpot.title} (copy)`,
+      x: Math.min(99, selectedSpot.x + offset),
+      y: Math.min(99, selectedSpot.y + offset),
+      pending: true,
+    }
+    addSpotToMaps(optimistic)
+    setSelectedSpot(optimistic)
+    
+    try {
+      const { data, error } = await supabase.from('spots').insert({
+        map_id:             selectedSpot.map_id,
+        title:              `${selectedSpot.title} (copy)`,
+        role:               selectedSpot.role,
+        roles:              selectedSpot.roles,
+        side:               selectedSpot.side,
+        notes:              selectedSpot.notes,
+        youtube:            selectedSpot.youtube,
+        images:             selectedSpot.images || [],
+        x:                  Math.min(99, selectedSpot.x + offset),
+        y:                  Math.min(99, selectedSpot.y + offset),
+        size:               selectedSpot.size,
+        requires_buildable: selectedSpot.requiresBuildable,
+        cone:               selectedSpot.cones || null,
+        fire_lines:         selectedSpot.fireLines || null,
+        routes:             selectedSpot.routes || [],
+      }).select().single()
+      if (error || !data) throw error || new Error('No data returned')
+      const saved = normalizeSpot(data)
+      replaceSpotInMaps(tempId, saved)
+      setSelectedSpot(saved)
+    } catch (err: any) {
+      console.error('Copy error:', err)
+      removeSpotFromMaps(tempId)
+      setSelectedSpot(null)
     }
   }
 
@@ -1382,18 +1435,32 @@ export default function IntelMap() {
   // ── spot selection
   const selectSpot = (spot: Spot) => {
     setSelectedSpot(spot); setShowAddSpot(false); setEditingSpotId(null)
-    setRightTab('details'); resetPlacementState()
+    resetPlacementState()
     setRouteDrawMode(false); setDrawingPoints([])
     setSelectedRouteId(null)
+    // Scroll the spot card into view in the list
+    requestAnimationFrame(() => {
+      const el = spotItemRefs.current.get(spot.id)
+      const list = spotListRef.current
+      if (el && list) {
+        const elTop    = el.offsetTop
+        const elBottom = elTop + el.offsetHeight
+        const listTop  = list.scrollTop
+        const listBottom = listTop + list.clientHeight
+        if (elTop < listTop || elBottom > listBottom) {
+          el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+        }
+      }
+    })
   }
 
   const openAddSpot = () => {
     if (showAddSpot) {
       revokeUrls(newSpot.images); resetNewSpotState()
       setPendingPlacement(null); setShowAddSpot(false); setEditingSpotId(null)
-      setRightTab('details'); return
+       return
     }
-    setShowAddSpot(true); setEditingSpotId(null); setRightTab('details'); setPendingPlacement(null)
+    setShowAddSpot(true); setEditingSpotId(null);  setPendingPlacement(null)
   }
 
   // ── preview computations
@@ -1444,57 +1511,88 @@ export default function IntelMap() {
           </div>
         </div>
 
-        {/* ── Row 1: data filters */}
-        <div className="sticky top-[94px] z-30 mb-2 grid gap-3 rounded-[28px] border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.92),rgba(8,20,12,0.88))] p-4 shadow-[0_20px_60px_rgba(0,0,0,0.45)] backdrop-blur-xl md:grid-cols-2 xl:grid-cols-8">
-          <div>
-            <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">Map</label>
-            <select value={selectedMapId} onChange={(e) => setSelectedMapId(e.target.value)} className={inputClass}>
-              {maps.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">Search</label>
-            <input value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Search spots..." className={inputClass} />
-          </div>
-          <div>
-            <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">Role</label>
-            <select value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)} className={inputClass}>
-              <option>All</option>
-              {roleNames.map((r) => <option key={r}>{r}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">Side</label>
-            <select value={spotSideFilter} onChange={(e) => setSpotSideFilter(e.target.value as SpotSideFilter)} className={inputClass}>
-              <option value="both">Both</option>
-              <option value="axis">Axis</option>
-              <option value="allies">Allies</option>
-            </select>
-          </div>
-          <div>
-            <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">Midpoint</label>
-            <select value={activeMidpoint} onChange={(e) => setActiveMidpoint(e.target.value)} className={inputClass}>
-              <option value="All">All Midpoints</option>
-              {(selectedMap?.midpoints || []).map((mp) => <option key={mp} value={mp}>{mp}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">Sort</label>
-            <select value={sortMode} onChange={(e) => setSortMode(e.target.value as 'alphabetical' | 'role')} className={inputClass}>
-              <option value="alphabetical">Alphabetical</option>
-              <option value="role">By Role</option>
-            </select>
-          </div>
-          <div className="flex items-end">
-            <button onClick={openAddSpot} className={`w-full ${showAddSpot ? buttonClass : softButtonClass}`}>
-              {showAddSpot ? 'Cancel Add Spot' : 'Add Spot'}
-            </button>
-          </div>
-          <div className="flex items-end">
-            <a href="/admin" className={`${buttonClass} flex w-full items-center justify-center`}>
-              Admin Panel
-            </a>
+        {/* ── Row 1: filters */}
+        <div className="sticky top-[94px] z-30 mb-2 rounded-[28px] border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.92),rgba(8,20,12,0.88))] p-4 shadow-[0_20px_60px_rgba(0,0,0,0.45)] backdrop-blur-xl">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-8">
+            {/* Map selector */}
+            <div>
+              <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">Map</label>
+              <select value={selectedMapId} onChange={(e) => setSelectedMapId(e.target.value)} className={inputClass}>
+                {maps.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+              </select>
+            </div>
+            {/* Search */}
+            <div>
+              <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">Search</label>
+              <input value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder="Search spots..." className={inputClass} />
+            </div>
+            {/* Role checkboxes */}
+            <div className="xl:col-span-2">
+              <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">
+                Roles {roleFilters.size > 0 && <span className="ml-1 text-emerald-400">({roleFilters.size})</span>}
+              </label>
+              <div className="flex flex-wrap gap-x-3 gap-y-1.5">
+                {roleNames.map((r) => (
+                  <label key={r} className="flex cursor-pointer items-center gap-1.5 text-xs text-zinc-300 hover:text-white">
+                    <input type="checkbox" checked={roleFilters.has(r)} className="accent-emerald-500"
+                      onChange={() => setRoleFilters((prev) => {
+                        const next = new Set(prev)
+                        next.has(r) ? next.delete(r) : next.add(r)
+                        return next
+                      })} />
+                    {r}
+                  </label>
+                ))}
+              </div>
+            </div>
+            {/* Side checkboxes */}
+            <div>
+              <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">Side</label>
+              <div className="flex flex-wrap gap-x-3 gap-y-1.5">
+                {(['Axis', 'Allies', 'Both'] as const).map((s) => (
+                  <label key={s} className="flex cursor-pointer items-center gap-1.5 text-xs text-zinc-300 hover:text-white">
+                    <input type="checkbox" checked={sideFilters.has(s)} className="accent-emerald-500"
+                      onChange={() => setSideFilters((prev) => {
+                        const next = new Set(prev)
+                        next.has(s) ? next.delete(s) : next.add(s)
+                        return next
+                      })} />
+                    {s}
+                  </label>
+                ))}
+              </div>
+            </div>
+            {/* Midpoint */}
+            <div>
+              <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">Midpoint</label>
+              <select value={activeMidpoint} onChange={(e) => setActiveMidpoint(e.target.value)} className={inputClass}>
+                <option value="All">All Midpoints</option>
+                {(selectedMap?.midpoints || []).map((mp) => <option key={mp} value={mp}>{mp}</option>)}
+              </select>
+            </div>
+            {/* Sort + Buildable */}
+            <div className="flex flex-col gap-2">
+              <label className="block text-[11px] uppercase tracking-[0.28em] text-zinc-400">Sort</label>
+              <select value={sortMode} onChange={(e) => setSortMode(e.target.value as 'alphabetical' | 'role')} className={inputClass}>
+                <option value="alphabetical">Alphabetical</option>
+                <option value="role">By Role</option>
+              </select>
+              <label className="flex cursor-pointer items-center gap-2 text-xs text-zinc-300 hover:text-white">
+                <input type="checkbox" checked={buildableFilter} className="accent-emerald-500"
+                  onChange={(e) => setBuildableFilter(e.target.checked)} />
+                Requires Buildable only
+              </label>
+            </div>
+            {/* Actions */}
+            <div className="flex flex-col gap-2">
+              <button onClick={openAddSpot} className={`w-full ${showAddSpot ? buttonClass : softButtonClass}`}>
+                {showAddSpot ? 'Cancel Add Spot' : 'Add Spot'}
+              </button>
+              <a href="/admin" className={`${buttonClass} flex w-full items-center justify-center`}>
+                Admin Panel
+              </a>
+            </div>
           </div>
         </div>
 
@@ -1821,80 +1919,30 @@ export default function IntelMap() {
             </div>
           </div>
 
-          {/* ── Right panel */}
+          {/* ── Right panel — always shows spot list; selected spot expands inline */}
           <div className="xl:sticky xl:top-[268px] xl:self-start">
             <div className={`${panelClass} p-4 md:p-5`}>
-              {/* Tab bar */}
-              <div className="mb-4 flex items-center justify-between gap-3">
-                <div className="flex gap-2">
-                  {(['list', 'details'] as RightTab[]).map((tab) => (
-                    <button key={tab} onClick={() => setRightTab(tab)}
-                      className={`${tabButtonClass} ${rightTab === tab
-                        ? 'border border-emerald-300/25 bg-emerald-600/90 text-white'
-                        : 'border border-emerald-300/15 bg-emerald-900/35 text-emerald-50 hover:bg-emerald-800/55'}`}>
-                      {tab === 'list' ? 'Spot List' : 'Spot Details'}
-                    </button>
-                  ))}
-                </div>
-                <span className="text-xs uppercase tracking-[0.22em] text-zinc-500">
+
+              {/* Header */}
+              <div className="mb-3 flex items-center justify-between">
+                <span className="text-sm font-semibold text-white">
+                  {showAddSpot ? 'New Spot' : editingSpotId ? 'Editing Spot' : `${sortedSpots.length} Spot${sortedSpots.length !== 1 ? 's' : ''}`}
+                </span>
+                <span className="text-[10px] uppercase tracking-[0.24em] text-zinc-500">
                   {placementMode === 'cone_first'  ? `${editingConeSide} 1st Edge` :
                    placementMode === 'cone_second' ? `${editingConeSide} 2nd Edge` :
                    placementMode === 'line_end'    ? `${editingConeSide} Line End` :
-                   routeDrawMode                   ? 'Drawing Route' :
-                   rightTab === 'list'             ? `${sortedSpots.length} Spots` :
-                   showAddSpot                     ? 'New Spot' :
-                   editingSpotId                   ? 'Editing' :
-                   selectedSpot?.pending           ? 'Saving' :
-                   selectedSpot                    ? 'Selected' : 'Idle'}
+                   routeDrawMode                   ? 'Drawing Route' : ''}
                 </span>
               </div>
 
-              {/* ── LIST TAB */}
-              {rightTab === 'list' ? (
-                <div className="max-h-[68vh] space-y-2 overflow-y-auto pr-1">
-                  {sortedSpots.length > 0 ? sortedSpots.map((spot) => {
-                    const sd          = getSideClasses(spot.side)
-                    const primaryRole = spot.roles?.[0] || spot.role || 'MG'
-                    const listSize    = Math.max(12, getRenderedSpotSize(spot))
-                    return (
-                      <button key={spot.id} onClick={() => selectSpot(spot)}
-                        className={`w-full rounded-[22px] border p-3 text-left transition ${selectedSpot?.id === spot.id ? 'border-emerald-300/35 bg-emerald-500/10' : 'border-emerald-400/8 bg-emerald-950/18 hover:bg-emerald-900/30'} ${spot.pending ? 'opacity-75' : ''}`}>
-                        <div className="flex items-center gap-2">
-                          <span className="inline-flex h-8 w-8 items-center justify-center">
-                            <ShapeMarker shape={getRoleShape(primaryRole)}
-                              sideClass={spot.pending ? 'bg-emerald-500/90' : sd.marker}
-                              borderClass={spot.pending ? 'border-emerald-200' : sd.border}
-                              icon={getRoleIcon(primaryRole)} size={listSize}
-                              isActive={selectedSpot?.id === spot.id} />
-                          </span>
-                          <span className="font-medium text-white">{spot.title}</span>
-                          {spot.pending && <span className="rounded-full border border-emerald-300/20 bg-emerald-950/70 px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-emerald-100">Saving</span>}
-                        </div>
-                        <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-[0.2em] text-zinc-500">
-                          <span>{spot.roles.join(', ')}</span>
-                          <span>•</span><span>{spot.side}</span>
-                          {spot.cones?.Axis   && <><span>•</span><span>Axis Cone</span></>}
-                          {spot.cones?.Allies && <><span>•</span><span>Allies Cone</span></>}
-                          {spot.fireLines?.Axis   && <><span>•</span><span>Axis Snipe</span></>}
-                          {spot.fireLines?.Allies && <><span>•</span><span>Allies Snipe</span></>}
-                          {(spot.routes || []).length > 0 && <><span>•</span><span>{spot.routes!.length} Route{spot.routes!.length !== 1 ? 's' : ''}</span></>}
-                        </div>
-                      </button>
-                    )
-                  }) : (
-                    <div className="rounded-[22px] border border-dashed border-emerald-400/8 bg-emerald-950/18 p-4 text-sm text-zinc-500">
-                      No spots match the current filters.
-                    </div>
-                  )}
-                </div>
-
-              /* ── ADD SPOT TAB */
-              ) : showAddSpot ? (
-                <div className="flex h-full flex-col gap-3">
-                  <p className="text-sm text-zinc-400">1. Click map to place. 2. Fill out. 3. Save.</p>
+              {/* ── ADD SPOT FORM */}
+              {showAddSpot && (
+                <div className="mb-4 rounded-[22px] border border-emerald-300/20 bg-emerald-950/30 p-4 space-y-3">
+                  <p className="text-xs text-zinc-400">Click map to place · fill out · save</p>
                   <input value={newSpot.title} onChange={(e) => setNewSpot((p) => ({ ...p, title: e.target.value }))}
                     placeholder="Spot title" className={inputClass} />
-                  <div className="rounded-[22px] border border-emerald-400/10 bg-emerald-950/18 p-3">
+                  <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3">
                     <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">Roles</label>
                     <div className="grid grid-cols-2 gap-2">
                       {roleNames.map((role) => {
@@ -1912,486 +1960,381 @@ export default function IntelMap() {
                   <select value={newSpot.side} onChange={(e) => setNewSpot((p) => ({ ...p, side: e.target.value as SpotSide }))} className={inputClass}>
                     <option value="Axis">Axis</option><option value="Allies">Allies</option><option value="Both">Both</option>
                   </select>
-                  <div>
-                    <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">Spot Size</label>
-                    <div className="flex items-center gap-2 rounded-2xl border border-emerald-400/10 bg-emerald-950/25 px-3 py-2">
-                      <input type="range" min="2" max="20" value={clampSpotSize(newSpot.size)}
-                        onChange={(e) => setNewSpot((p) => ({ ...p, size: clampSpotSize(Number(e.target.value)) }))}
-                        className="w-full accent-emerald-500" />
-                      <span className="w-8 text-xs text-zinc-300">{clampSpotSize(newSpot.size)}</span>
-                    </div>
+                  <div className="flex items-center gap-2 rounded-2xl border border-emerald-400/10 bg-emerald-950/25 px-3 py-2">
+                    <label className="text-[11px] uppercase tracking-[0.28em] text-zinc-400 whitespace-nowrap">Size</label>
+                    <input type="range" min="2" max="20" value={clampSpotSize(newSpot.size)}
+                      onChange={(e) => setNewSpot((p) => ({ ...p, size: clampSpotSize(Number(e.target.value)) }))}
+                      className="w-full accent-emerald-500" />
+                    <span className="w-6 text-xs text-zinc-300">{clampSpotSize(newSpot.size)}</span>
                   </div>
                   <textarea value={newSpot.notes} onChange={(e) => setNewSpot((p) => ({ ...p, notes: e.target.value }))}
-                    placeholder="Notes / purpose / cautions" rows={3} className={inputClass} />
+                    placeholder="Notes / purpose / cautions" rows={2} className={inputClass} />
                   <input value={newSpot.youtube} onChange={(e) => setNewSpot((p) => ({ ...p, youtube: e.target.value }))}
                     placeholder="YouTube link" className={inputClass} />
-                  <div className="rounded-[22px] border border-emerald-400/10 bg-emerald-950/18 p-3">
-                    <label className="mb-2 block text-sm text-zinc-300">Upload up to 5 images</label>
+                  <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-emerald-400/10 bg-emerald-950/25 px-4 py-3 hover:bg-emerald-900/30">
+                    <input type="checkbox" checked={newSpot.requiresBuildable} className="accent-emerald-500 h-4 w-4"
+                      onChange={(e) => setNewSpot((p) => ({ ...p, requiresBuildable: e.target.checked }))} />
+                    <div>
+                      <div className="text-sm font-medium text-white">Requires Buildable</div>
+                      <div className="text-xs text-zinc-500">Spot needs a buildable to function</div>
+                    </div>
+                  </label>
+                  <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3">
+                    <label className="mb-2 block text-sm text-zinc-300">Up to 5 images</label>
                     <input ref={fileInputRef} type="file" accept="image/*" multiple onChange={handleImageUpload}
                       className="text-sm text-zinc-400 file:mr-3 file:rounded-xl file:border-0 file:bg-emerald-900/60 file:px-3 file:py-2 file:text-sm file:text-white hover:file:bg-emerald-800" />
-                    <div className="mt-3 grid grid-cols-3 gap-2">
-                      {newSpot.images.map((img, idx) => (
-                        <div key={idx} className="relative">
-                          <img src={img} alt={`Preview ${idx + 1}`} className="h-24 w-full rounded-xl border border-zinc-800 object-cover" />
-                          <button onClick={() => removeNewSpotImage(idx)} className="absolute right-1 top-1 rounded-full bg-black/70 px-2 py-1 text-xs text-white">✕</button>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="mt-2 text-xs text-zinc-500">{newSpot.images.length}/5 images</div>
+                    {newSpot.images.length > 0 && (
+                      <div className="mt-3 grid grid-cols-3 gap-2">
+                        {newSpot.images.map((img, idx) => (
+                          <div key={idx} className="relative">
+                            <img src={img} alt="" className="h-20 w-full rounded-xl border border-zinc-800 object-cover" />
+                            <button onClick={() => removeNewSpotImage(idx)} className="absolute right-1 top-1 rounded-full bg-black/70 px-2 py-0.5 text-xs text-white">✕</button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div className="mt-1 text-xs text-zinc-500">{newSpot.images.length}/5</div>
                   </div>
-                  <div className="rounded-[22px] border border-emerald-400/10 bg-emerald-950/18 p-3 text-sm text-zinc-400">
-                    {pendingPlacement ? <>Placed at <span className="text-white">{pendingPlacement.x}%</span>, <span className="text-white">{pendingPlacement.y}%</span></> : 'Click the map to place the spot.'}
+                  <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3 text-sm text-zinc-400">
+                    {pendingPlacement ? <>Placed at <span className="text-white">{pendingPlacement.x}%, {pendingPlacement.y}%</span></> : 'Click the map to place.'}
                   </div>
                   <div className="flex gap-2">
-                    <button onClick={saveNewSpot} disabled={isSavingNewSpot}
-                      className={`${buttonClass} ${isSavingNewSpot ? 'cursor-not-allowed opacity-70' : ''}`}>
+                    <button onClick={saveNewSpot} disabled={isSavingNewSpot} className={`${buttonClass} ${isSavingNewSpot ? 'cursor-not-allowed opacity-70' : ''}`}>
                       {isSavingNewSpot ? 'Saving...' : 'Save Spot'}
                     </button>
                     <button onClick={() => { revokeUrls(newSpot.images); setPendingPlacement(null); setShowAddSpot(false); resetNewSpotState() }} className={softButtonClass}>Cancel</button>
                   </div>
                 </div>
-
-              /* ── EDIT SPOT TAB */
-              ) : editingSpotId && selectedSpot ? (
-                <div className="flex h-full flex-col gap-3 overflow-y-auto max-h-[78vh] pr-0.5">
-                  <input value={editSpot.title} onChange={(e) => setEditSpot((p) => ({ ...p, title: e.target.value }))}
-                    placeholder="Spot title" className={inputClass} />
-
-                  <div className="rounded-[22px] border border-emerald-400/10 bg-emerald-950/18 p-3">
-                    <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">Roles</label>
-                    <div className="grid grid-cols-2 gap-2">
-                      {roleNames.map((role) => {
-                        const checked = editSpot.roles.includes(role)
-                        return (
-                          <label key={role} className={`flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2 text-sm transition ${checked ? 'border-emerald-300/35 bg-emerald-600/20 text-white' : 'border-emerald-300/10 bg-emerald-950/20 text-zinc-300 hover:bg-emerald-900/30'}`}>
-                            <input type="checkbox" checked={checked} className="accent-emerald-500"
-                              onChange={() => setEditSpot((p) => ({ ...p, roles: toggleRole(p.roles, role) }))} />
-                            <span>{role}</span>
-                          </label>
-                        )
-                      })}
-                    </div>
-                  </div>
-
-                  <select value={editSpot.side} onChange={(e) => {
-                    const nextSide = e.target.value as SpotSide
-                    setEditSpot((p) => ({ ...p, side: nextSide }))
-                    setEditingConeSide(nextSide === 'Allies' ? 'Allies' : 'Axis')
-                  }} className={inputClass}>
-                    <option value="Axis">Axis</option><option value="Allies">Allies</option><option value="Both">Both</option>
-                  </select>
-
-                  <div>
-                    <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">Spot Size</label>
-                    <div className="flex items-center gap-2 rounded-2xl border border-emerald-400/10 bg-emerald-950/25 px-3 py-2">
-                      <input type="range" min="2" max="20" value={clampSpotSize(editSpot.size)}
-                        onChange={(e) => updateEditSpotSize(Number(e.target.value))} className="w-full accent-emerald-500" />
-                      <span className="w-8 text-xs text-zinc-300">{clampSpotSize(editSpot.size)}</span>
-                    </div>
-                  </div>
-
-                  {/* Cone / Line tool panel */}
-                  {(canUseCone || canUseLine) && (
-                    <div className="rounded-[22px] border border-emerald-400/10 bg-emerald-950/18 p-3">
-                      <div className="mb-3 flex flex-wrap gap-2">
-                        {availableConeSides.map((s) => (
-                          <button key={s} onClick={() => setEditingConeSide(s)}
-                            className={`rounded-2xl px-3 py-2 text-sm font-medium transition ${editingConeSide === s ? s === 'Axis' ? 'border border-red-300/30 bg-red-600/80 text-white' : 'border border-blue-300/30 bg-blue-600/80 text-white' : 'border border-emerald-300/15 bg-emerald-900/35 text-emerald-50 hover:bg-emerald-800/55'}`}>
-                            {s}
-                          </button>
-                        ))}
-                      </div>
-                      <div className="mb-3 flex flex-wrap gap-2">
-                        {canUseCone && <button onClick={() => setToolMode('cone')} className={`rounded-2xl px-3 py-2 text-sm font-medium transition ${toolMode === 'cone' ? 'border border-emerald-300/30 bg-emerald-600/80 text-white' : 'border border-emerald-300/15 bg-emerald-900/35 text-emerald-50 hover:bg-emerald-800/55'}`}>Cone</button>}
-                        {canUseLine && <button onClick={() => setToolMode('line')} className={`rounded-2xl px-3 py-2 text-sm font-medium transition ${toolMode === 'line' ? 'border border-emerald-300/30 bg-emerald-600/80 text-white' : 'border border-emerald-300/15 bg-emerald-900/35 text-emerald-50 hover:bg-emerald-800/55'}`}>Snipe Line</button>}
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        {toolMode === 'cone' && canUseCone && (
-                          <>
-                            <button onClick={beginConePlacement} className={softButtonClass}>
-                              {placementMode ? `Placing ${editingConeSide}...` : `Mark ${editingConeSide} Cone`}
-                            </button>
-                            <button onClick={clearCone} className={softButtonClass}>Clear {editingConeSide}</button>
-                          </>
-                        )}
-                        {toolMode === 'line' && canUseLine && (
-                          <>
-                            <div className="mb-2 w-full">
-                              <label className="mb-1 block text-[10px] uppercase tracking-[0.24em] text-zinc-500">Midpoint</label>
-                              <select value={snipeLineMidpoint} onChange={(e) => setSnipeLineMidpoint(e.target.value)}
-                                className={tinyInputClass + ' w-full'}>
-                                <option value="Any">Any (always visible)</option>
-                                {(selectedMap?.midpoints || []).map((mp) => <option key={mp} value={mp}>{mp}</option>)}
-                              </select>
-                            </div>
-                            <button onClick={beginLinePlacement} className={softButtonClass}>
-                              {placementMode === 'line_end' ? `Placing ${editingConeSide}...` : `Mark ${editingConeSide} Snipe`}
-                            </button>
-                            <button onClick={clearLine} className={softButtonClass}>Clear {editingConeSide}</button>
-                          </>
-                        )}
-                      </div>
-                      <div className="mt-2 text-xs text-zinc-500">
-                        {toolMode === 'cone' && !placementMode && (currentEditingCone ? `${editingConeSide} cone set — ${Math.round(currentEditingCone.length * 28)}m range, ${Math.round(currentEditingCone.spread)}° spread` : `No ${editingConeSide} cone yet.`)}
-                        {toolMode === 'cone' && placementMode === 'cone_first'  && `Click the first outer edge of the ${editingConeSide} cone.`}
-                        {toolMode === 'cone' && placementMode === 'cone_second' && `Move mouse to preview, click the second edge.`}
-                        {toolMode === 'line' && !placementMode && (currentEditingLine ? `${editingConeSide} snipe — ${selectedSpot ? getDistanceMeters(selectedSpot.x, selectedSpot.y, currentEditingLine.endX, currentEditingLine.endY) : 0}m / max ${getMaxRangeMeters(primaryEditRole, editingConeSide)}m` : `No ${editingConeSide} snipe yet.`)}
-                        {toolMode === 'line' && placementMode === 'line_end' && `Move mouse to preview, click impact, click the impact point.`}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Route drawing panel */}
-                  {canUseRoute && (
-                    <div className="rounded-[22px] border border-emerald-400/10 bg-emerald-950/18 p-3">
-                      <label className="mb-3 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">Routes</label>
-
-                      {/* Side selector */}
-                      <div className="mb-3 flex gap-2">
-                        {(['Axis', 'Allies'] as ConeSide[]).map((s) => (
-                          <button key={s} onClick={() => setNewRouteConfig((p) => ({ ...p, side: s }))}
-                            className={`rounded-xl px-3 py-1.5 text-sm font-medium transition ${newRouteConfig.side === s ? s === 'Axis' ? 'border border-red-300/30 bg-red-600/80 text-white' : 'border border-blue-300/30 bg-blue-600/80 text-white' : 'border border-emerald-300/15 bg-emerald-900/35 text-emerald-50 hover:bg-emerald-800/55'}`}>
-                            {s}
-                          </button>
-                        ))}
-                      </div>
-
-                      {/* Midpoint */}
-                      <div className="mb-3">
-                        <label className="mb-1.5 block text-[10px] uppercase tracking-[0.24em] text-zinc-500">Midpoint</label>
-                        <select value={newRouteConfig.midpoint} onChange={(e) => setNewRouteConfig((p) => ({ ...p, midpoint: e.target.value }))}
-                          className={tinyInputClass + ' w-full'}>
-                          <option value="Any">Any Midpoint</option>
-                          {(selectedMap?.midpoints || []).map((mp) => <option key={mp} value={mp}>{mp}</option>)}
-                        </select>
-                      </div>
-
-                      {/* Color picker */}
-                      <div className="mb-3">
-                        <label className="mb-1.5 block text-[10px] uppercase tracking-[0.24em] text-zinc-500">Color</label>
-                        <div className="flex flex-wrap gap-2">
-                          {ROUTE_COLORS.map((c) => (
-                            <button key={c.value} onClick={() => setNewRouteConfig((p) => ({ ...p, color: c.value }))}
-                              title={c.name}
-                              className={`h-7 w-7 rounded-full border-2 transition ${newRouteConfig.color === c.value ? 'border-white scale-125' : 'border-transparent hover:border-white/50'}`}
-                              style={{ backgroundColor: c.value }} />
-                          ))}
-                        </div>
-                      </div>
-
-                      {/* Label */}
-                      <div className="mb-3">
-                        <label className="mb-1.5 block text-[10px] uppercase tracking-[0.24em] text-zinc-500">Label</label>
-                        <select value={newRouteConfig.label} onChange={(e) => setNewRouteConfig((p) => ({ ...p, label: e.target.value }))}
-                          className={tinyInputClass + ' w-full'}>
-                          {ROUTE_LABELS.map((l) => <option key={l} value={l}>{l}</option>)}
-                        </select>
-                      </div>
-
-                      {/* Stroke width */}
-                      <div className="mb-3">
-                        <label className="mb-1.5 block text-[10px] uppercase tracking-[0.24em] text-zinc-500">Line Width — {newRouteConfig.strokeWidth}px</label>
-                        <input type="range" min="2" max="8" value={newRouteConfig.strokeWidth}
-                          onChange={(e) => setNewRouteConfig((p) => ({ ...p, strokeWidth: Number(e.target.value) }))}
-                          className="w-full accent-emerald-500" />
-                      </div>
-
-                      {/* YouTube */}
-                      <div className="mb-3">
-                        <label className="mb-1.5 block text-[10px] uppercase tracking-[0.24em] text-zinc-500">Route Video (optional)</label>
-                        <input value={newRouteConfig.youtube} onChange={(e) => setNewRouteConfig((p) => ({ ...p, youtube: e.target.value }))}
-                          placeholder="YouTube link" className={tinyInputClass + ' w-full'} />
-                      </div>
-
-                      {/* Draw button */}
-                      <button onClick={() => setRouteDrawMode((p) => !p)}
-                        className={`w-full ${routeDrawMode ? buttonClass : softButtonClass}`}>
-                        {routeDrawMode ? 'Drawing — hold mouse on map' : 'Draw Route'}
-                      </button>
-                      {routeDrawMode && <p className="mt-1.5 text-xs text-zinc-500">Hold mouse button down on the map and drag to draw. Release to finish.</p>}
-
-                      {/* Existing routes list */}
-                      {editSpot.routes.length > 0 && (
-                        <div className="mt-4 space-y-2">
-                          <label className="block text-[10px] uppercase tracking-[0.24em] text-zinc-500">Saved Routes ({editSpot.routes.length})</label>
-                          {editSpot.routes.map((r) => (
-                            <div key={r.id} className="flex items-center gap-2 rounded-xl border border-emerald-400/10 bg-emerald-950/25 px-3 py-2">
-                              <span className="h-3 w-3 flex-shrink-0 rounded-full" style={{ backgroundColor: r.color }} />
-                              <span className="flex-1 text-xs text-zinc-300">
-                                <span className="font-medium text-white">{r.label}</span>
-                                {' · '}{r.side}{' · '}{r.midpoint}
-                                {' · '}{getRouteTotalDistance(r)}m
-                              </span>
-                              <button onClick={() => deleteRoute(r.id)} className="text-xs text-red-400 hover:text-red-300">✕</button>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  <textarea value={editSpot.notes} onChange={(e) => setEditSpot((p) => ({ ...p, notes: e.target.value }))}
-                    placeholder="Notes" rows={3} className={inputClass} />
-                  <input value={editSpot.youtube} onChange={(e) => setEditSpot((p) => ({ ...p, youtube: e.target.value }))}
-                    placeholder="YouTube link" className={inputClass} />
-
-                  {/* ── Photo management */}
-                  <div className="rounded-[22px] border border-emerald-400/10 bg-emerald-950/18 p-3">
-                    <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">
-                      Photos ({editSpot.images.length + editSpotNewPreviews.length}/5)
-                    </label>
-
-                    {/* Existing photos */}
-                    {editSpot.images.length > 0 && (
-                      <div className="mb-3 grid grid-cols-3 gap-2">
-                        {editSpot.images.map((img, idx) => (
-                          <div key={idx} className="relative">
-                            <img src={img} alt={`Photo ${idx + 1}`}
-                              className="h-24 w-full rounded-xl border border-zinc-800 object-cover" />
-                            <button
-                              onClick={() => setEditSpot((p) => ({ ...p, images: p.images.filter((_, i) => i !== idx) }))}
-                              className="absolute right-1 top-1 rounded-full bg-black/80 px-2 py-0.5 text-xs text-white hover:bg-red-900/90"
-                              title="Remove photo">✕</button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* New photo previews */}
-                    {editSpotNewPreviews.length > 0 && (
-                      <div className="mb-3 grid grid-cols-3 gap-2">
-                        {editSpotNewPreviews.map((url, idx) => (
-                          <div key={idx} className="relative">
-                            <img src={url} alt={`New ${idx + 1}`}
-                              className="h-24 w-full rounded-xl border border-emerald-600/40 object-cover" />
-                            <span className="absolute left-1 top-1 rounded-full bg-emerald-700/90 px-1.5 py-0.5 text-[10px] text-white">New</span>
-                            <button
-                              onClick={() => {
-                                URL.revokeObjectURL(editSpotNewPreviews[idx])
-                                setEditSpotNewPreviews((p) => p.filter((_, i) => i !== idx))
-                                setEditSpotNewFiles((p) => p.filter((_, i) => i !== idx))
-                              }}
-                              className="absolute right-1 top-1 rounded-full bg-black/80 px-2 py-0.5 text-xs text-white hover:bg-red-900/90"
-                              title="Remove">✕</button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Upload more */}
-                    {editSpot.images.length + editSpotNewPreviews.length < 5 && (
-                      <>
-                        <input ref={editFileInputRef} type="file" accept="image/*" multiple
-                          onChange={(e) => {
-                            const files = Array.from(e.target.files || [])
-                            const slots = 5 - editSpot.images.length - editSpotNewPreviews.length
-                            const limited = files.slice(0, slots)
-                            if (!limited.length) return
-                            const previews = limited.map((f) => URL.createObjectURL(f))
-                            setEditSpotNewFiles((p) => [...p, ...limited])
-                            setEditSpotNewPreviews((p) => [...p, ...previews])
-                            if (editFileInputRef.current) editFileInputRef.current.value = ''
-                          }}
-                          className="text-sm text-zinc-400 file:mr-3 file:rounded-xl file:border-0 file:bg-emerald-900/60 file:px-3 file:py-2 file:text-sm file:text-white hover:file:bg-emerald-800" />
-                        <p className="mt-1.5 text-xs text-zinc-600">
-                          {5 - editSpot.images.length - editSpotNewPreviews.length} slot{5 - editSpot.images.length - editSpotNewPreviews.length !== 1 ? 's' : ''} remaining
-                        </p>
-                      </>
-                    )}
-                  </div>
-
-                  <div className="flex gap-2">
-                    <button onClick={saveEditedSpot} className={buttonClass}>Save Changes</button>
-                    <button onClick={cancelEditSpot} className={softButtonClass}>Cancel</button>
-                  </div>
-                </div>
-
-              /* ── VIEW SPOT TAB */
-              ) : selectedSpot ? (
-                <div className="flex h-full flex-col overflow-y-auto max-h-[78vh] pr-0.5">
-                  {/* Images */}
-                  {selectedSpot.images && selectedSpot.images.length > 0 ? (
-                    <>
-                      <img src={selectedSpot.images[0]} alt={selectedSpot.title}
-                        className="h-48 w-full cursor-pointer rounded-[24px] border border-zinc-800 object-cover"
-                        onClick={() => setLightboxImage(selectedSpot.images![0])} />
-                      {selectedSpot.images.length > 1 && (
-                        <div className="mt-3 grid grid-cols-3 gap-2">
-                          {selectedSpot.images.map((img, idx) => (
-                            <img key={idx} src={img} alt={`${selectedSpot.title} ${idx + 1}`}
-                              className="h-16 w-full cursor-pointer rounded-xl border border-zinc-800 object-cover"
-                              onClick={() => setLightboxImage(img)} />
-                          ))}
-                        </div>
-                      )}
-                    </>
-                  ) : (
-                    <div className="flex h-48 w-full items-center justify-center rounded-[24px] border border-dashed border-emerald-400/10 bg-emerald-950/18 text-zinc-500">No images</div>
-                  )}
-
-                  {/* Badges */}
-                  <div className="mt-4 flex flex-wrap items-center gap-2 text-xs uppercase tracking-[0.2em] text-zinc-400">
-                    {selectedSpot.roles.map((r) => (
-                      <span key={r} className={`rounded-full px-3 py-1 text-white ${getRoleColor(r)}`}>{r}</span>
-                    ))}
-                    <span className={`rounded-full px-3 py-1 ${getSideClasses(selectedSpot.side).badge}`}>{selectedSpot.side}</span>
-                    {selectedSpot.cones?.Axis    && <span className="rounded-full border border-red-300/15 bg-red-900/35 px-3 py-1 text-white">Axis Cone</span>}
-                    {selectedSpot.cones?.Allies  && <span className="rounded-full border border-blue-300/15 bg-blue-900/35 px-3 py-1 text-white">Allies Cone</span>}
-                    {selectedSpot.fireLines?.Axis    && <span className="rounded-full border border-red-300/15 bg-red-900/35 px-3 py-1 text-white">Axis Snipe</span>}
-                    {selectedSpot.fireLines?.Allies  && <span className="rounded-full border border-blue-300/15 bg-blue-900/35 px-3 py-1 text-white">Allies Snipe</span>}
-                    {selectedSpot.pending && <span className="rounded-full border border-emerald-300/20 bg-emerald-950/70 px-3 py-1 text-emerald-100">Saving...</span>}
-                  </div>
-
-                  <h3 className="mt-4 text-2xl font-bold text-white">{selectedSpot.title}</h3>
-                  {selectedSpot.notes && <p className="mt-3 text-sm leading-6 text-zinc-300">{selectedSpot.notes}</p>}
-
-                  {/* Spot size slider */}
-                  {!selectedSpot.pending && (
-                    <div className="mt-4">
-                      <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">Spot Size</label>
-                      <div className="flex items-center gap-2 rounded-2xl border border-emerald-400/10 bg-emerald-950/25 px-3 py-2">
-                        <input type="range" min="2" max="20" value={clampSpotSize(selectedSpot.size)}
-                          onChange={(e) => updateSelectedSpotSize(Number(e.target.value))}
-                          className="w-full accent-emerald-500" />
-                        <span className="w-8 text-xs text-zinc-300">{clampSpotSize(selectedSpot.size)}</span>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Cone info */}
-                  {(selectedSpot.cones?.Axis || selectedSpot.cones?.Allies) && (
-                    <div className="mt-4 rounded-[22px] border border-emerald-400/10 bg-emerald-950/18 p-3">
-                      <div className="mb-2 font-medium text-white">Line of Sight Cones</div>
-                      {selectedSpot.cones?.Axis && (
-                        <div className="grid grid-cols-3 gap-2 text-xs uppercase tracking-[0.16em] text-red-300">
-                          <div>Dir <span className="normal-case text-white">{Math.round(selectedSpot.cones.Axis.angle)}°</span></div>
-                          <div>Spread <span className="normal-case text-white">{Math.round(selectedSpot.cones.Axis.spread)}°</span></div>
-                          <div>Range <span className="normal-case text-white">{Math.round(selectedSpot.cones.Axis.length * 28)}m</span></div>
-                        </div>
-                      )}
-                      {selectedSpot.cones?.Allies && (
-                        <div className="mt-2 grid grid-cols-3 gap-2 text-xs uppercase tracking-[0.16em] text-blue-300">
-                          <div>Dir <span className="normal-case text-white">{Math.round(selectedSpot.cones.Allies.angle)}°</span></div>
-                          <div>Spread <span className="normal-case text-white">{Math.round(selectedSpot.cones.Allies.spread)}°</span></div>
-                          <div>Range <span className="normal-case text-white">{Math.round(selectedSpot.cones.Allies.length * 28)}m</span></div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Fire line info */}
-                  {(selectedSpot.fireLines?.Axis || selectedSpot.fireLines?.Allies) && (
-                    <div className="mt-4 rounded-[22px] border border-emerald-400/10 bg-emerald-950/18 p-3">
-                      <div className="mb-2 font-medium text-white">Snipe Lines</div>
-                      {selectedSpot.fireLines?.Axis && (() => {
-                        const l = selectedSpot.fireLines!.Axis!
-                        const dm = getDistanceMeters(selectedSpot.x, selectedSpot.y, l.endX, l.endY)
-                        const maxM = getMaxRangeMeters(selectedSpot.roles?.[0] || selectedSpot.role || 'MG', 'Axis')
-                        return (
-                          <div className="grid grid-cols-3 gap-2 text-xs uppercase tracking-[0.16em] text-red-300">
-                            <div>Axis <span className="normal-case text-white">{dm}m</span></div>
-                            <div>Max <span className="normal-case text-white">{maxM}m</span>{dm > maxM && <span className="ml-1 text-yellow-400">OUT</span>}</div>
-                            <div className="normal-case text-zinc-400">{l.midpoint !== 'Any' ? l.midpoint : 'Any'}</div>
-                          </div>
-                        )
-                      })()}
-                      {selectedSpot.fireLines?.Allies && (() => {
-                        const l = selectedSpot.fireLines!.Allies!
-                        const dm = getDistanceMeters(selectedSpot.x, selectedSpot.y, l.endX, l.endY)
-                        const maxM = getMaxRangeMeters(selectedSpot.roles?.[0] || selectedSpot.role || 'MG', 'Allies')
-                        return (
-                          <div className="mt-2 grid grid-cols-3 gap-2 text-xs uppercase tracking-[0.16em] text-blue-300">
-                            <div>Allies <span className="normal-case text-white">{dm}m</span></div>
-                            <div>Max <span className="normal-case text-white">{maxM}m</span>{dm > maxM && <span className="ml-1 text-yellow-400">OUT</span>}</div>
-                            <div className="normal-case text-zinc-400">{l.midpoint !== 'Any' ? l.midpoint : 'Any'}</div>
-                          </div>
-                        )
-                      })()}
-                    </div>
-                  )}
-
-                  {/* Routes */}
-                  {(selectedSpot.routes || []).length > 0 && (
-                    <div className="mt-4 rounded-[22px] border border-emerald-400/10 bg-emerald-950/18 p-3">
-                      <div className="mb-3 font-medium text-white">Driving Routes</div>
-                      <div className="space-y-2">
-                        {(selectedSpot.routes || []).map((route) => {
-                          const isSelected = selectedRouteId === route.id
-                          const totalDist  = getRouteTotalDistance(route)
-                          return (
-                            <button key={route.id} onClick={() => setSelectedRouteId(isSelected ? null : route.id)}
-                              className={`w-full rounded-xl border p-2.5 text-left transition ${isSelected ? 'border-emerald-300/30 bg-emerald-600/15' : 'border-emerald-400/8 bg-emerald-950/20 hover:bg-emerald-900/30'}`}>
-                              <div className="flex items-center gap-2">
-                                <span className="h-3.5 w-3.5 flex-shrink-0 rounded-full border border-white/20"
-                                  style={{ backgroundColor: route.color }} />
-                                <span className="font-medium text-white text-sm">{route.label}</span>
-                                <span className={`ml-auto rounded-full px-2 py-0.5 text-[10px] font-medium ${route.side === 'Axis' ? 'bg-red-700/70 text-red-100' : 'bg-blue-700/70 text-blue-100'}`}>{route.side}</span>
-                              </div>
-                              <div className="mt-1 flex flex-wrap gap-x-3 text-[11px] text-zinc-500">
-                                <span>{route.midpoint}</span>
-                                <span>{totalDist}m total</span>
-                                {route.youtube && <span className="text-emerald-400">▶ Video</span>}
-                              </div>
-                            </button>
-                          )
-                        })}
-                      </div>
-                      {/* Selected route video */}
-                      {selectedRoute && selectedRouteEmbed && (
-                        <div className="mt-3 overflow-hidden rounded-[20px] border border-zinc-800 bg-black">
-                          <iframe className="aspect-video w-full" src={`${selectedRouteEmbed}?rel=0&modestbranding=1`}
-                            title={`${selectedRoute.label} route video`}
-                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                            allowFullScreen />
-                        </div>
-                      )}
-                      {selectedRoute && selectedRoute.youtube && !selectedRouteEmbed && (
-                        <a href={selectedRoute.youtube} target="_blank" rel="noreferrer"
-                          className="mt-2 inline-flex items-center rounded-xl border border-emerald-300/15 bg-emerald-900/35 px-3 py-1.5 text-sm hover:bg-emerald-800/55">
-                          Open route video ↗
-                        </a>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Spot YouTube */}
-                  {selectedSpotEmbedUrl && (
-                    <div className="mt-5 overflow-hidden rounded-[24px] border border-zinc-800 bg-black">
-                      <iframe className="aspect-video w-full" src={`${selectedSpotEmbedUrl}?rel=0&modestbranding=1`}
-                        title={`${selectedSpot.title} video`}
-                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                        allowFullScreen />
-                    </div>
-                  )}
-                  {selectedSpot.youtube && (
-                    <a href={selectedSpot.youtube} target="_blank" rel="noreferrer"
-                      className="mt-3 inline-flex w-fit items-center rounded-2xl border border-emerald-300/15 bg-emerald-900/35 px-4 py-2 text-sm font-medium hover:bg-emerald-800/55">
-                      Open on YouTube ↗
-                    </a>
-                  )}
-
-                  <div className="mt-4 flex gap-2">
-                    <button onClick={startEditingSpot} disabled={!!selectedSpot.pending}
-                      className={`${softButtonClass} ${selectedSpot.pending ? 'cursor-not-allowed opacity-60' : ''}`}>
-                      Edit Spot
-                    </button>
-                    <button onClick={deleteSelectedSpot} disabled={!!selectedSpot.pending}
-                      className={`inline-flex items-center rounded-2xl border border-red-700 bg-red-900/60 px-4 py-2 text-sm font-medium hover:bg-red-800/70 ${selectedSpot.pending ? 'cursor-not-allowed opacity-60' : ''}`}>
-                      Delete Spot
-                    </button>
-                  </div>
-                </div>
-
-              /* ── EMPTY STATE */
-              ) : (
-                <div className="flex h-full min-h-[320px] items-center justify-center rounded-[24px] border border-dashed border-emerald-400/10 bg-emerald-950/18 p-8 text-center">
-                  <div>
-                    <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-emerald-400/10 bg-emerald-900/25 text-2xl">🎯</div>
-                    <h3 className="text-xl font-semibold text-white">Select a spot</h3>
-                    <p className="mt-2 max-w-sm text-sm leading-6 text-zinc-400">Click a marker on the map or a name in the list.</p>
-                  </div>
-                </div>
               )}
+
+              {/* ── INLINE SPOT LIST */}
+              <div ref={spotListRef} className="max-h-[72vh] space-y-2 overflow-y-auto pr-0.5">
+                {sortedSpots.length === 0 && !showAddSpot && (
+                  <div className="rounded-[22px] border border-dashed border-emerald-400/8 bg-emerald-950/18 p-4 text-sm text-zinc-500">
+                    No spots match the current filters.
+                  </div>
+                )}
+                {sortedSpots.map((spot) => {
+                  const isSelected  = selectedSpot?.id === spot.id
+                  const isEditing   = editingSpotId === spot.id
+                  const sd          = getSideClasses(spot.side)
+                  const primaryRole = spot.roles?.[0] || spot.role || 'MG'
+                  const listSize    = Math.max(12, getRenderedSpotSize(spot))
+
+                  return (
+                    <div key={spot.id}
+                      ref={(el) => { if (el) spotItemRefs.current.set(spot.id, el); else spotItemRefs.current.delete(spot.id) }}
+                      className={`rounded-[22px] border transition-all duration-200 ${
+                        isSelected
+                          ? 'border-emerald-300/40 bg-emerald-500/12 shadow-[0_0_0_1px_rgba(52,211,153,0.15)]'
+                          : 'border-emerald-400/8 bg-emerald-950/18 hover:bg-emerald-900/25'
+                      } ${spot.pending ? 'opacity-75' : ''}`}>
+
+                      {/* Row */}
+                      <button className="w-full p-3 text-left"
+                        onClick={() => isSelected ? setSelectedSpot(null) : selectSpot(spot)}>
+                        <div className="flex items-center gap-2">
+                          <span className="inline-flex h-8 w-8 flex-shrink-0 items-center justify-center">
+                            <ShapeMarker shape={getRoleShape(primaryRole)}
+                              sideClass={spot.pending ? 'bg-emerald-500/90' : sd.marker}
+                              borderClass={spot.pending ? 'border-emerald-200' : sd.border}
+                              icon={getRoleIcon(primaryRole)} size={listSize}
+                              isActive={isSelected} />
+                          </span>
+                          <span className={`font-medium ${isSelected ? 'text-white' : 'text-zinc-200'}`}>{spot.title}</span>
+                          {spot.requiresBuildable && <span className="rounded-full bg-amber-900/50 px-2 py-0.5 text-[10px] text-amber-300">Buildable</span>}
+                          {spot.pending && <span className="rounded-full border border-emerald-300/20 bg-emerald-950/70 px-2 py-0.5 text-[10px] text-emerald-100">Saving</span>}
+                          <span className={`ml-auto flex-shrink-0 text-zinc-600 text-xs transition-transform duration-200 ${isSelected ? 'rotate-180' : ''}`}>▼</span>
+                        </div>
+                        <div className="mt-1.5 flex flex-wrap gap-1.5 text-[11px] uppercase tracking-[0.18em] text-zinc-500">
+                          <span>{spot.roles.join(', ')}</span>
+                          <span>·</span><span>{spot.side}</span>
+                          {spot.cones?.Axis   && <><span>·</span><span>Axis Cone</span></>}
+                          {spot.cones?.Allies && <><span>·</span><span>Allies Cone</span></>}
+                          {spot.fireLines?.Axis   && <><span>·</span><span>Axis Snipe</span></>}
+                          {spot.fireLines?.Allies && <><span>·</span><span>Allies Snipe</span></>}
+                          {(spot.routes || []).length > 0 && <><span>·</span><span>{spot.routes!.length} Route{spot.routes!.length !== 1 ? 's' : ''}</span></>}
+                        </div>
+                      </button>
+
+                      {/* Expanded */}
+                      {isSelected && (
+                        <div className="border-t border-emerald-300/10 px-3 pb-3 pt-3">
+                          {isEditing ? (
+                            <div className="space-y-3">
+                              <input value={editSpot.title} onChange={(e) => setEditSpot((p) => ({ ...p, title: e.target.value }))}
+                                placeholder="Spot title" className={inputClass} />
+                              <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3">
+                                <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">Roles</label>
+                                <div className="grid grid-cols-2 gap-2">
+                                  {roleNames.map((role) => {
+                                    const checked = editSpot.roles.includes(role)
+                                    return (
+                                      <label key={role} className={`flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2 text-sm transition ${checked ? 'border-emerald-300/35 bg-emerald-600/20 text-white' : 'border-emerald-300/10 bg-emerald-950/20 text-zinc-300 hover:bg-emerald-900/30'}`}>
+                                        <input type="checkbox" checked={checked} className="accent-emerald-500"
+                                          onChange={() => setEditSpot((p) => ({ ...p, roles: toggleRole(p.roles, role) }))} />
+                                        <span>{role}</span>
+                                      </label>
+                                    )
+                                  })}
+                                </div>
+                              </div>
+                              <select value={editSpot.side} onChange={(e) => {
+                                const nextSide = e.target.value as SpotSide
+                                setEditSpot((p) => ({ ...p, side: nextSide }))
+                                setEditingConeSide(nextSide === 'Allies' ? 'Allies' : 'Axis')
+                              }} className={inputClass}>
+                                <option value="Axis">Axis</option><option value="Allies">Allies</option><option value="Both">Both</option>
+                              </select>
+                              <div className="flex items-center gap-2 rounded-2xl border border-emerald-400/10 bg-emerald-950/25 px-3 py-2">
+                                <label className="text-[11px] uppercase tracking-[0.28em] text-zinc-400 whitespace-nowrap">Size</label>
+                                <input type="range" min="2" max="20" value={clampSpotSize(editSpot.size)}
+                                  onChange={(e) => updateEditSpotSize(Number(e.target.value))} className="w-full accent-emerald-500" />
+                                <span className="w-6 text-xs text-zinc-300">{clampSpotSize(editSpot.size)}</span>
+                              </div>
+                              {(canUseCone || canUseLine) && (
+                                <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3">
+                                  <div className="mb-3 flex flex-wrap gap-2">
+                                    {availableConeSides.map((s) => (
+                                      <button key={s} onClick={() => setEditingConeSide(s)}
+                                        className={`rounded-2xl px-3 py-2 text-sm font-medium transition ${editingConeSide === s ? s === 'Axis' ? 'border border-red-300/30 bg-red-600/80 text-white' : 'border border-blue-300/30 bg-blue-600/80 text-white' : 'border border-emerald-300/15 bg-emerald-900/35 text-emerald-50 hover:bg-emerald-800/55'}`}>{s}</button>
+                                    ))}
+                                    {canUseCone && <button onClick={() => setToolMode('cone')} className={`rounded-2xl px-3 py-2 text-sm font-medium transition ${toolMode === 'cone' ? 'border border-emerald-300/30 bg-emerald-600/80 text-white' : 'border border-emerald-300/15 bg-emerald-900/35 text-emerald-50 hover:bg-emerald-800/55'}`}>Cone</button>}
+                                    {canUseLine && <button onClick={() => setToolMode('line')} className={`rounded-2xl px-3 py-2 text-sm font-medium transition ${toolMode === 'line' ? 'border border-emerald-300/30 bg-emerald-600/80 text-white' : 'border border-emerald-300/15 bg-emerald-900/35 text-emerald-50 hover:bg-emerald-800/55'}`}>Snipe Line</button>}
+                                  </div>
+                                  <div className="flex flex-wrap gap-2">
+                                    {toolMode === 'cone' && canUseCone && (<>
+                                      <button onClick={beginConePlacement} className={softButtonClass}>{placementMode ? `Placing ${editingConeSide}...` : `Mark ${editingConeSide} Cone`}</button>
+                                      <button onClick={clearCone} className={softButtonClass}>Clear {editingConeSide}</button>
+                                    </>)}
+                                    {toolMode === 'line' && canUseLine && (<>
+                                      <div className="w-full mb-2">
+                                        <label className="mb-1 block text-[10px] uppercase tracking-[0.24em] text-zinc-500">Midpoint</label>
+                                        <select value={snipeLineMidpoint} onChange={(e) => setSnipeLineMidpoint(e.target.value)} className={tinyInputClass + ' w-full'}>
+                                          <option value="Any">Any (always visible)</option>
+                                          {(selectedMap?.midpoints || []).map((mp) => <option key={mp} value={mp}>{mp}</option>)}
+                                        </select>
+                                      </div>
+                                      <button onClick={beginLinePlacement} className={softButtonClass}>{placementMode === 'line_end' ? `Placing ${editingConeSide}...` : `Mark ${editingConeSide} Snipe`}</button>
+                                      <button onClick={clearLine} className={softButtonClass}>Clear {editingConeSide}</button>
+                                    </>)}
+                                  </div>
+                                  <div className="mt-2 text-xs text-zinc-500">
+                                    {toolMode === 'cone' && !placementMode && (currentEditingCone ? `${editingConeSide} cone — ${Math.round(currentEditingCone.length * 28)}m, ${Math.round(currentEditingCone.spread)}° spread` : `No ${editingConeSide} cone yet.`)}
+                                    {toolMode === 'cone' && placementMode === 'cone_first' && `Click 1st edge of ${editingConeSide} cone.`}
+                                    {toolMode === 'cone' && placementMode === 'cone_second' && `Preview, then click 2nd edge.`}
+                                    {toolMode === 'line' && !placementMode && (currentEditingLine ? `${editingConeSide} snipe — ${selectedSpot ? getDistanceMeters(selectedSpot.x, selectedSpot.y, currentEditingLine.endX, currentEditingLine.endY) : 0}m / max ${getMaxRangeMeters(primaryEditRole, editingConeSide)}m` : `No ${editingConeSide} snipe yet.`)}
+                                    {toolMode === 'line' && placementMode === 'line_end' && `Move to preview, click impact.`}
+                                  </div>
+                                </div>
+                              )}
+                              {canUseRoute && (
+                                <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3">
+                                  <label className="mb-3 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">Routes</label>
+                                  <div className="mb-3 flex gap-2">
+                                    {(['Axis', 'Allies'] as ConeSide[]).map((s) => (
+                                      <button key={s} onClick={() => setNewRouteConfig((p) => ({ ...p, side: s }))}
+                                        className={`rounded-xl px-3 py-1.5 text-sm font-medium transition ${newRouteConfig.side === s ? s === 'Axis' ? 'border border-red-300/30 bg-red-600/80 text-white' : 'border border-blue-300/30 bg-blue-600/80 text-white' : 'border border-emerald-300/15 bg-emerald-900/35 text-emerald-50 hover:bg-emerald-800/55'}`}>{s}</button>
+                                    ))}
+                                  </div>
+                                  <div className="mb-3">
+                                    <label className="mb-1.5 block text-[10px] uppercase tracking-[0.24em] text-zinc-500">Midpoint</label>
+                                    <select value={newRouteConfig.midpoint} onChange={(e) => setNewRouteConfig((p) => ({ ...p, midpoint: e.target.value }))} className={tinyInputClass + ' w-full'}>
+                                      <option value="Any">Any Midpoint</option>
+                                      {(selectedMap?.midpoints || []).map((mp) => <option key={mp} value={mp}>{mp}</option>)}
+                                    </select>
+                                  </div>
+                                  <div className="mb-3">
+                                    <label className="mb-1.5 block text-[10px] uppercase tracking-[0.24em] text-zinc-500">Color</label>
+                                    <div className="flex flex-wrap gap-2">
+                                      {ROUTE_COLORS.map((c) => (
+                                        <button key={c.value} onClick={() => setNewRouteConfig((p) => ({ ...p, color: c.value }))} title={c.name}
+                                          className={`h-6 w-6 rounded-full border-2 transition ${newRouteConfig.color === c.value ? 'border-white scale-125' : 'border-transparent hover:border-white/50'}`}
+                                          style={{ backgroundColor: c.value }} />
+                                      ))}
+                                    </div>
+                                  </div>
+                                  <div className="mb-3">
+                                    <label className="mb-1.5 block text-[10px] uppercase tracking-[0.24em] text-zinc-500">Label</label>
+                                    <select value={newRouteConfig.label} onChange={(e) => setNewRouteConfig((p) => ({ ...p, label: e.target.value }))} className={tinyInputClass + ' w-full'}>
+                                      {ROUTE_LABELS.map((l) => <option key={l} value={l}>{l}</option>)}
+                                    </select>
+                                  </div>
+                                  <div className="mb-3">
+                                    <label className="mb-1.5 block text-[10px] uppercase tracking-[0.24em] text-zinc-500">Width — {newRouteConfig.strokeWidth}px</label>
+                                    <input type="range" min="2" max="8" value={newRouteConfig.strokeWidth}
+                                      onChange={(e) => setNewRouteConfig((p) => ({ ...p, strokeWidth: Number(e.target.value) }))} className="w-full accent-emerald-500" />
+                                  </div>
+                                  <div className="mb-3">
+                                    <label className="mb-1.5 block text-[10px] uppercase tracking-[0.24em] text-zinc-500">Route Video</label>
+                                    <input value={newRouteConfig.youtube} onChange={(e) => setNewRouteConfig((p) => ({ ...p, youtube: e.target.value }))} placeholder="YouTube link" className={tinyInputClass + ' w-full'} />
+                                  </div>
+                                  <button onClick={() => setRouteDrawMode((p) => !p)} className={`w-full ${routeDrawMode ? buttonClass : softButtonClass}`}>
+                                    {routeDrawMode ? 'Drawing — hold mouse on map' : 'Draw Route'}
+                                  </button>
+                                  {routeDrawMode && <p className="mt-1.5 text-xs text-zinc-500">Hold mouse down and drag. Release to finish.</p>}
+                                  {editSpot.routes.length > 0 && (
+                                    <div className="mt-3 space-y-2">
+                                      <label className="block text-[10px] uppercase tracking-[0.24em] text-zinc-500">Saved ({editSpot.routes.length})</label>
+                                      {editSpot.routes.map((r) => (
+                                        <div key={r.id} className="flex items-center gap-2 rounded-xl border border-emerald-400/10 bg-emerald-950/25 px-3 py-2">
+                                          <span className="h-3 w-3 flex-shrink-0 rounded-full" style={{ backgroundColor: r.color }} />
+                                          <span className="flex-1 text-xs text-zinc-300"><span className="font-medium text-white">{r.label}</span>{` · `}{r.side}{` · `}{r.midpoint}{` · `}{getRouteTotalDistance(r)}m</span>
+                                          <button onClick={() => deleteRoute(r.id)} className="text-xs text-red-400 hover:text-red-300">✕</button>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                              <textarea value={editSpot.notes} onChange={(e) => setEditSpot((p) => ({ ...p, notes: e.target.value }))} placeholder="Notes" rows={2} className={inputClass} />
+                              <input value={editSpot.youtube} onChange={(e) => setEditSpot((p) => ({ ...p, youtube: e.target.value }))} placeholder="YouTube link" className={inputClass} />
+                              <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-emerald-400/10 bg-emerald-950/25 px-4 py-3 hover:bg-emerald-900/30">
+                                <input type="checkbox" checked={editSpot.requiresBuildable} className="accent-emerald-500 h-4 w-4"
+                                  onChange={(e) => setEditSpot((p) => ({ ...p, requiresBuildable: e.target.checked }))} />
+                                <div><div className="text-sm font-medium text-white">Requires Buildable</div><div className="text-xs text-zinc-500">Spot needs a buildable</div></div>
+                              </label>
+                              <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3">
+                                <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">Photos ({editSpot.images.length + editSpotNewPreviews.length}/5)</label>
+                                {editSpot.images.length > 0 && (
+                                  <div className="mb-3 grid grid-cols-3 gap-2">
+                                    {editSpot.images.map((img, idx) => (
+                                      <div key={idx} className="relative">
+                                        <img src={img} alt="" className="h-20 w-full rounded-xl border border-zinc-800 object-cover" />
+                                        <button onClick={() => setEditSpot((p) => ({ ...p, images: p.images.filter((_, i) => i !== idx) }))} className="absolute right-1 top-1 rounded-full bg-black/80 px-2 py-0.5 text-xs text-white hover:bg-red-900/90">✕</button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                                {editSpotNewPreviews.length > 0 && (
+                                  <div className="mb-3 grid grid-cols-3 gap-2">
+                                    {editSpotNewPreviews.map((url, idx) => (
+                                      <div key={idx} className="relative">
+                                        <img src={url} alt="" className="h-20 w-full rounded-xl border border-emerald-600/40 object-cover" />
+                                        <span className="absolute left-1 top-1 rounded-full bg-emerald-700/90 px-1.5 py-0.5 text-[10px] text-white">New</span>
+                                        <button onClick={() => { URL.revokeObjectURL(editSpotNewPreviews[idx]); setEditSpotNewPreviews((p) => p.filter((_, i) => i !== idx)); setEditSpotNewFiles((p) => p.filter((_, i) => i !== idx)) }} className="absolute right-1 top-1 rounded-full bg-black/80 px-2 py-0.5 text-xs text-white hover:bg-red-900/90">✕</button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                                {editSpot.images.length + editSpotNewPreviews.length < 5 && (
+                                  <>
+                                    <input ref={editFileInputRef} type="file" accept="image/*" multiple
+                                      onChange={(e) => {
+                                        const files = Array.from(e.target.files || [])
+                                        const slots = 5 - editSpot.images.length - editSpotNewPreviews.length
+                                        const limited = files.slice(0, slots); if (!limited.length) return
+                                        const previews = limited.map((f) => URL.createObjectURL(f))
+                                        setEditSpotNewFiles((p) => [...p, ...limited]); setEditSpotNewPreviews((p) => [...p, ...previews])
+                                        if (editFileInputRef.current) editFileInputRef.current.value = ''
+                                      }} className="text-sm text-zinc-400 file:mr-3 file:rounded-xl file:border-0 file:bg-emerald-900/60 file:px-3 file:py-2 file:text-sm file:text-white hover:file:bg-emerald-800" />
+                                    <p className="mt-1.5 text-xs text-zinc-600">{5 - editSpot.images.length - editSpotNewPreviews.length} slot{5 - editSpot.images.length - editSpotNewPreviews.length !== 1 ? 's' : ''} remaining</p>
+                                  </>
+                                )}
+                              </div>
+                              <div className="flex gap-2">
+                                <button onClick={saveEditedSpot} className={buttonClass}>Save Changes</button>
+                                <button onClick={cancelEditSpot} className={softButtonClass}>Cancel</button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="space-y-3">
+                              {selectedSpot.images && selectedSpot.images.length > 0 && (
+                                <>
+                                  <img src={selectedSpot.images[0]} alt={selectedSpot.title}
+                                    className="h-40 w-full cursor-pointer rounded-[20px] border border-zinc-800 object-cover"
+                                    onClick={() => setLightboxImage(selectedSpot.images![0])} />
+                                  {selectedSpot.images.length > 1 && (
+                                    <div className="grid grid-cols-4 gap-1.5">
+                                      {selectedSpot.images.slice(1).map((img, idx) => (
+                                        <img key={idx} src={img} alt="" className="h-14 w-full cursor-pointer rounded-xl border border-zinc-800 object-cover" onClick={() => setLightboxImage(img)} />
+                                      ))}
+                                    </div>
+                                  )}
+                                </>
+                              )}
+                              <div className="flex flex-wrap gap-1.5 text-xs uppercase tracking-[0.18em]">
+                                {selectedSpot.roles.map((r) => <span key={r} className={`rounded-full px-2.5 py-0.5 text-white ${getRoleColor(r)}`}>{r}</span>)}
+                                <span className={`rounded-full px-2.5 py-0.5 ${getSideClasses(selectedSpot.side).badge}`}>{selectedSpot.side}</span>
+                                {selectedSpot.requiresBuildable && <span className="rounded-full border border-amber-400/30 bg-amber-900/40 px-2.5 py-0.5 text-amber-200">Buildable</span>}
+                                {selectedSpot.cones?.Axis    && <span className="rounded-full border border-red-300/15 bg-red-900/35 px-2.5 py-0.5 text-white">Axis Cone</span>}
+                                {selectedSpot.cones?.Allies  && <span className="rounded-full border border-blue-300/15 bg-blue-900/35 px-2.5 py-0.5 text-white">Allies Cone</span>}
+                                {selectedSpot.fireLines?.Axis   && <span className="rounded-full border border-red-300/15 bg-red-900/35 px-2.5 py-0.5 text-white">Axis Snipe</span>}
+                                {selectedSpot.fireLines?.Allies && <span className="rounded-full border border-blue-300/15 bg-blue-900/35 px-2.5 py-0.5 text-white">Allies Snipe</span>}
+                                {selectedSpot.pending && <span className="rounded-full border border-emerald-300/20 bg-emerald-950/70 px-2.5 py-0.5 text-emerald-100">Saving...</span>}
+                              </div>
+                              {selectedSpot.notes && <p className="text-sm leading-6 text-zinc-300">{selectedSpot.notes}</p>}
+                              {!selectedSpot.pending && (
+                                <div className="flex items-center gap-2 rounded-2xl border border-emerald-400/10 bg-emerald-950/25 px-3 py-2">
+                                  <label className="text-[11px] uppercase tracking-[0.28em] text-zinc-400 whitespace-nowrap">Size</label>
+                                  <input type="range" min="2" max="20" value={clampSpotSize(selectedSpot.size)}
+                                    onChange={(e) => updateSelectedSpotSize(Number(e.target.value))} className="w-full accent-emerald-500" />
+                                  <span className="w-6 text-xs text-zinc-300">{clampSpotSize(selectedSpot.size)}</span>
+                                </div>
+                              )}
+                              {(selectedSpot.cones?.Axis || selectedSpot.cones?.Allies) && (
+                                <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3">
+                                  <div className="mb-2 text-xs font-medium uppercase tracking-[0.2em] text-zinc-400">LOS Cones</div>
+                                  {selectedSpot.cones?.Axis && <div className="grid grid-cols-3 gap-1 text-xs text-red-300"><div>Dir <span className="text-white">{Math.round(selectedSpot.cones.Axis.angle)}°</span></div><div>Spread <span className="text-white">{Math.round(selectedSpot.cones.Axis.spread)}°</span></div><div>Range <span className="text-white">{Math.round(selectedSpot.cones.Axis.length * 28)}m</span></div></div>}
+                                  {selectedSpot.cones?.Allies && <div className="mt-1.5 grid grid-cols-3 gap-1 text-xs text-blue-300"><div>Dir <span className="text-white">{Math.round(selectedSpot.cones.Allies.angle)}°</span></div><div>Spread <span className="text-white">{Math.round(selectedSpot.cones.Allies.spread)}°</span></div><div>Range <span className="text-white">{Math.round(selectedSpot.cones.Allies.length * 28)}m</span></div></div>}
+                                </div>
+                              )}
+                              {(selectedSpot.fireLines?.Axis || selectedSpot.fireLines?.Allies) && (
+                                <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3">
+                                  <div className="mb-2 text-xs font-medium uppercase tracking-[0.2em] text-zinc-400">Snipe Lines</div>
+                                  {selectedSpot.fireLines?.Axis && (() => { const l = selectedSpot.fireLines!.Axis!; const dm = getDistanceMeters(selectedSpot.x, selectedSpot.y, l.endX, l.endY); const maxM = getMaxRangeMeters(selectedSpot.roles?.[0] || selectedSpot.role || 'MG', 'Axis'); return <div className="grid grid-cols-3 gap-1 text-xs text-red-300"><div>Axis <span className="text-white">{dm}m</span></div><div>Max <span className="text-white">{maxM}m</span>{dm > maxM && <span className="ml-1 text-yellow-400">OUT</span>}</div><div className="text-zinc-500">{l.midpoint !== 'Any' ? l.midpoint : 'Any'}</div></div> })()}
+                                  {selectedSpot.fireLines?.Allies && (() => { const l = selectedSpot.fireLines!.Allies!; const dm = getDistanceMeters(selectedSpot.x, selectedSpot.y, l.endX, l.endY); const maxM = getMaxRangeMeters(selectedSpot.roles?.[0] || selectedSpot.role || 'MG', 'Allies'); return <div className="mt-1.5 grid grid-cols-3 gap-1 text-xs text-blue-300"><div>Allies <span className="text-white">{dm}m</span></div><div>Max <span className="text-white">{maxM}m</span>{dm > maxM && <span className="ml-1 text-yellow-400">OUT</span>}</div><div className="text-zinc-500">{l.midpoint !== 'Any' ? l.midpoint : 'Any'}</div></div> })()}
+                                </div>
+                              )}
+                              {(selectedSpot.routes || []).length > 0 && (
+                                <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3">
+                                  <div className="mb-2 text-xs font-medium uppercase tracking-[0.2em] text-zinc-400">Routes</div>
+                                  <div className="space-y-1.5">
+                                    {(selectedSpot.routes || []).map((route) => {
+                                      const isSel = selectedRouteId === route.id
+                                      return (
+                                        <button key={route.id} onClick={() => setSelectedRouteId(isSel ? null : route.id)}
+                                          className={`w-full rounded-xl border p-2 text-left transition ${isSel ? 'border-emerald-300/30 bg-emerald-600/15' : 'border-emerald-400/8 bg-emerald-950/20 hover:bg-emerald-900/30'}`}>
+                                          <div className="flex items-center gap-2">
+                                            <span className="h-3 w-3 flex-shrink-0 rounded-full" style={{ backgroundColor: route.color }} />
+                                            <span className="text-sm font-medium text-white">{route.label}</span>
+                                            <span className={`ml-auto rounded-full px-2 py-0.5 text-[10px] ${route.side === 'Axis' ? 'bg-red-700/70 text-red-100' : 'bg-blue-700/70 text-blue-100'}`}>{route.side}</span>
+                                          </div>
+                                          <div className="mt-0.5 flex gap-3 text-[11px] text-zinc-500">
+                                            <span>{route.midpoint}</span><span>{getRouteTotalDistance(route)}m</span>{route.youtube && <span className="text-emerald-400">▶</span>}
+                                          </div>
+                                        </button>
+                                      )
+                                    })}
+                                  </div>
+                                  {selectedRoute && selectedRouteEmbed && (
+                                    <div className="mt-3 overflow-hidden rounded-[18px] border border-zinc-800 bg-black">
+                                      <iframe className="aspect-video w-full" src={`${selectedRouteEmbed}?rel=0&modestbranding=1`} title={`${selectedRoute.label} route video`} allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowFullScreen />
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                              {selectedSpotEmbedUrl && (
+                                <div className="overflow-hidden rounded-[20px] border border-zinc-800 bg-black">
+                                  <iframe className="aspect-video w-full" src={`${selectedSpotEmbedUrl}?rel=0&modestbranding=1`} title={`${selectedSpot.title} video`} allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowFullScreen />
+                                </div>
+                              )}
+                              {selectedSpot.youtube && !selectedSpotEmbedUrl && (
+                                <a href={selectedSpot.youtube} target="_blank" rel="noreferrer" className="inline-flex w-fit items-center rounded-2xl border border-emerald-300/15 bg-emerald-900/35 px-4 py-2 text-sm font-medium hover:bg-emerald-800/55">Open on YouTube ↗</a>
+                              )}
+                              <div className="flex flex-wrap gap-2 pt-1">
+                                <button onClick={startEditingSpot} disabled={!!selectedSpot.pending} className={`${softButtonClass} ${selectedSpot.pending ? 'cursor-not-allowed opacity-60' : ''}`}>Edit</button>
+                                <button onClick={copySelectedSpot} disabled={!!selectedSpot.pending} className={`${softButtonClass} ${selectedSpot.pending ? 'cursor-not-allowed opacity-60' : ''}`}>Copy</button>
+                                <button onClick={deleteSelectedSpot} disabled={!!selectedSpot.pending} className={`inline-flex items-center rounded-2xl border border-red-700 bg-red-900/60 px-4 py-2 text-sm font-medium hover:bg-red-800/70 ${selectedSpot.pending ? 'cursor-not-allowed opacity-60' : ''}`}>Delete</button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
             </div>
           </div>
         </div>
