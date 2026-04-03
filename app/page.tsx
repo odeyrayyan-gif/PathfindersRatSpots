@@ -1948,7 +1948,7 @@ export default function IntelMap() {
                   <div className={`absolute inset-0 ${mapCursor}`}
                     onMouseDown={handleMouseDown}
                     onClick={handleMapClick}
-                    style={{ transform: `translate(${position.x}px, ${position.y}px) scale(${scale})`, transformOrigin: 'center center', willChange: 'transform' }}>
+                    style={{ transform: `translate(${position.x}px, ${position.y}px) scale(${scale})`, transformOrigin: 'center center' }}>
 
                     {/* Map image — onLoad captures natural dimensions so ResizeObserver can
                          compute the exact container height, eliminating any letterboxing */}
@@ -1962,7 +1962,7 @@ export default function IntelMap() {
                     {/* Satellite overlay */}
                     {hasSatellite && showSatellite && selectedMap.overlay && (
                       <img src={selectedMap.overlay} alt={`${selectedMap.name} satellite`}
-                        className="pointer-events-none absolute inset-0 h-full w-full object-fill"
+                        className="pointer-events-none absolute inset-0 h-full w-full object-cover"
                         draggable={false} style={{ opacity: overlayOpacity / 100 }}
                         onError={() => setOverlayBroken((p) => ({ ...p, [selectedMap.id]: true }))} />
                     )}
