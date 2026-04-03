@@ -16,7 +16,7 @@ type PlacementMode = null | 'cone_first' | 'cone_second' | 'line_end'
 type SpotCone = {
   angle: number
   spread: number
-  length: number // stored in % units (meters / 28). 500m ≈ 17.9, 1000m ≈ 35.7
+  length: number // stored in % units (meters / 20). 500m = 25, 1000m = 50
 }
 
 type SpotConeSet = {
@@ -141,8 +141,8 @@ function getMapOrientation(mapName: string): MapOrientation {
 // Map is always 2000m × 2000m (10×10 grid squares × 200m each).
 // Coordinates are 0–100%, so 1% = 20m. This never changes per map.
 function getDistanceMeters(x1: number, y1: number, x2: number, y2: number): number {
-  const dx = (x2 - x1) * 28
-  const dy = (y2 - y1) * 28
+  const dx = (x2 - x1) * 20
+  const dy = (y2 - y1) * 20
   return Math.round(Math.sqrt(dx * dx + dy * dy))
 }
 
@@ -176,7 +176,7 @@ function roleSupportsRoute(role: string): boolean {
 }
 
 function metersToPercent(meters: number): number {
-  return meters / 28
+  return meters / 20
 }
 
 // OOB zones: horizontal = top+bottom 20%, vertical = left+right 20%
@@ -453,7 +453,7 @@ function ConeShape({
   const labelRad = cone.angle * (Math.PI / 180)
   const lx = cx + r * Math.cos(labelRad)
   const ly = cy + r * Math.sin(labelRad)
-  const distM = Math.round(cone.length * 28)
+  const distM = Math.round(cone.length * 20)
 
   return (
     <g>
@@ -498,8 +498,13 @@ function SnipeLineShape({
         strokeLinecap="round"
         vectorEffect="non-scaling-stroke" />
       <circle cx={startX} cy={startY} r={0.25} fill="rgba(255,255,255,0.90)" />
-      <circle cx={endX}   cy={endY}   r={0.35}
-        fill={(outOfRange || oob) ? '#f59e0b' : 'rgba(255,255,255,0.90)'} />
+      {/* Impact point — only shown after placed, not during preview */}
+      {!preview && (
+        <text x={endX} y={endY + 0.7} textAnchor="middle" fontSize={1.2}
+          style={{ userSelect: 'none', pointerEvents: 'none' }}>
+          💥
+        </text>
+      )}
       <text x={midX} y={midY - 0.4} textAnchor="middle" fontSize={0.8}
         fill={(outOfRange || oob) ? 'rgba(180,80,0,0.9)' : 'rgba(0,0,0,0.85)'}
         fontWeight="700" style={{ userSelect: 'none' }}>
@@ -2059,7 +2064,7 @@ export default function IntelMap() {
                             dragMoveRef.current = false
                             dragPosRef.current = null
                           }}>
-                          <div className={`w-4 h-4 rounded-full border-2 border-white/90 shadow-lg ${side === 'Axis' ? 'bg-red-500' : 'bg-blue-500'}`} />
+                          <div className={`w-3 h-3 rounded-full border-2 border-white/80 ${side === 'Axis' ? 'bg-red-500/70' : 'bg-blue-500/70'}`} />
                         </div>
                       )
                     })}
@@ -2349,7 +2354,7 @@ export default function IntelMap() {
                                     </>)}
                                   </div>
                                   <div className="mt-2 text-xs text-zinc-500">
-                                    {toolMode === 'cone' && !placementMode && (currentEditingCone ? `${editingConeSide} cone — ${Math.round(currentEditingCone.length * 28)}m, ${Math.round(currentEditingCone.spread)}° spread` : `No ${editingConeSide} cone yet.`)}
+                                    {toolMode === 'cone' && !placementMode && (currentEditingCone ? `${editingConeSide} cone — ${Math.round(currentEditingCone.length * 20)}m, ${Math.round(currentEditingCone.spread)}° spread` : `No ${editingConeSide} cone yet.`)}
                                     {toolMode === 'cone' && placementMode === 'cone_first' && `Click 1st edge of ${editingConeSide} cone.`}
                                     {toolMode === 'cone' && placementMode === 'cone_second' && `Preview, then click 2nd edge.`}
                                     {toolMode === 'line' && !placementMode && (currentEditingLine ? `${editingConeSide} snipe — ${selectedSpot ? getDistanceMeters(selectedSpot.x, selectedSpot.y, currentEditingLine.endX, currentEditingLine.endY) : 0}m / max ${getMaxRangeMeters(primaryEditRole, editingConeSide)}m` : `No ${editingConeSide} snipe yet.`)}
@@ -2550,8 +2555,8 @@ export default function IntelMap() {
                               {(selectedSpot.cones?.Axis || selectedSpot.cones?.Allies) && (
                                 <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3">
                                   <div className="mb-2 text-xs font-medium uppercase tracking-[0.2em] text-zinc-400">LOS Cones</div>
-                                  {selectedSpot.cones?.Axis && <div className="grid grid-cols-3 gap-1 text-xs text-red-300"><div>Dir <span className="text-white">{Math.round(selectedSpot.cones.Axis.angle)}°</span></div><div>Spread <span className="text-white">{Math.round(selectedSpot.cones.Axis.spread)}°</span></div><div>Range <span className="text-white">{Math.round(selectedSpot.cones.Axis.length * 28)}m</span></div></div>}
-                                  {selectedSpot.cones?.Allies && <div className="mt-1.5 grid grid-cols-3 gap-1 text-xs text-blue-300"><div>Dir <span className="text-white">{Math.round(selectedSpot.cones.Allies.angle)}°</span></div><div>Spread <span className="text-white">{Math.round(selectedSpot.cones.Allies.spread)}°</span></div><div>Range <span className="text-white">{Math.round(selectedSpot.cones.Allies.length * 28)}m</span></div></div>}
+                                  {selectedSpot.cones?.Axis && <div className="grid grid-cols-3 gap-1 text-xs text-red-300"><div>Dir <span className="text-white">{Math.round(selectedSpot.cones.Axis.angle)}°</span></div><div>Spread <span className="text-white">{Math.round(selectedSpot.cones.Axis.spread)}°</span></div><div>Range <span className="text-white">{Math.round(selectedSpot.cones.Axis.length * 20)}m</span></div></div>}
+                                  {selectedSpot.cones?.Allies && <div className="mt-1.5 grid grid-cols-3 gap-1 text-xs text-blue-300"><div>Dir <span className="text-white">{Math.round(selectedSpot.cones.Allies.angle)}°</span></div><div>Spread <span className="text-white">{Math.round(selectedSpot.cones.Allies.spread)}°</span></div><div>Range <span className="text-white">{Math.round(selectedSpot.cones.Allies.length * 20)}m</span></div></div>}
                                 </div>
                               )}
                               {(selectedSpot.fireLines?.Axis || selectedSpot.fireLines?.Allies) && (
