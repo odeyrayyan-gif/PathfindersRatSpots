@@ -89,14 +89,13 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
 
     async session({ session, token }) {
       if (session.user) {
-        session.user.role = token.role as string | undefined
-        session.user.discordId = token.discordId as string | undefined
-        session.user.username = token.username as string | undefined
+        session.user.id         = token.discordId as string | undefined
+        session.user.role       = token.role as string | undefined
+        session.user.discordId  = token.discordId as string | undefined
+        session.user.username   = token.username as string | undefined
         session.user.globalName = token.globalName as string | undefined
-        session.user.image =
-          (token.avatar as string | undefined) ?? session.user.image
+        session.user.image      = (token.avatar as string | undefined) ?? session.user.image
       }
-
       return session
     },
 

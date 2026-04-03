@@ -1,6 +1,7 @@
 'use client'
 
 import React from 'react'
+import { useSession } from 'next-auth/react'
 import { supabase } from '@/lib/supabase'
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
@@ -64,6 +65,13 @@ type Spot = {
   images?: string[]
   size: number
   requiresBuildable: boolean
+  verified: boolean
+  patchVersion: string
+  createdBy?: string | null
+  createdByName?: string | null
+  lastEditedBy?: string | null
+  lastEditedByName?: string | null
+  lastEditedAt?: string | null
   cones?: SpotConeSet | null
   fireLines?: SpotLineSet | null
   routes?: SpotRoute[]
@@ -78,6 +86,15 @@ type MapData = {
   overlay?: string | null
   midpoints: string[] // always exactly 3, populated once in Supabase
   spots: Spot[]
+}
+
+type SpotComment = {
+  id: number
+  spot_id: number
+  user_id: string
+  user_name: string
+  content: string
+  created_at: string
 }
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
@@ -272,6 +289,13 @@ function normalizeSpot(raw: any): Spot {
     images:     Array.isArray(raw.images) ? raw.images : [],
     size:       clampSpotSize(raw.size ?? 12),
     requiresBuildable: Boolean(raw.requires_buildable),
+    verified:      Boolean(raw.verified),
+    patchVersion:  raw.patch_version ?? '',
+    createdBy:         raw.created_by     ?? null,
+    createdByName:     raw.created_by_name ?? null,
+    lastEditedBy:      raw.last_edited_by  ?? null,
+    lastEditedByName:  raw.last_edited_by_name ?? null,
+    lastEditedAt:      raw.last_edited_at  ?? null,
     cones:      normalizeConeSet(raw.cone),
     fireLines:  normalizeLineSet(raw.fire_lines),
     routes:     normalizeRoutes(raw.routes),
@@ -597,6 +621,15 @@ const tinyInputClass  = 'rounded-xl border border-emerald-300/15 bg-emerald-950/
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
 
 export default function IntelMap() {
+  // ── session & permissions
+  const { data: session } = useSession()
+  const userRole     = (session?.user as any)?.role ?? 'viewer'
+  const userId       = (session?.user as any)?.id   ?? ''
+  const userName     = session?.user?.name           ?? 'Unknown'
+  const canEdit      = userRole === 'admin' || userRole === 'contributor'
+  const canDelete    = userRole === 'admin'
+  const canAdd       = userRole === 'admin' || userRole === 'contributor'
+
   // ── data state
   const [maps,          setMaps]          = React.useState<MapData[]>([])
   const [selectedMapId, setSelectedMapId] = React.useState<string>('utah')
@@ -606,6 +639,14 @@ export default function IntelMap() {
   const [selectedSpot,   setSelectedSpot]   = React.useState<Spot | null>(null)
   const [editingSpotId,  setEditingSpotId]  = React.useState<number | null>(null)
   const [selectedRouteId,setSelectedRouteId]= React.useState<string | null>(null)
+
+  // ── undo delete state
+  const [undoToast,      setUndoToast]      = React.useState<{ spot: Spot; timerId: ReturnType<typeof setTimeout> } | null>(null)
+
+  // ── comments state
+  const [comments,       setComments]       = React.useState<SpotComment[]>([])
+  const [commentText,    setCommentText]    = React.useState('')
+  const [isLoadingComments, setIsLoadingComments] = React.useState(false)
 
   // ── list filter state
   const [roleFilters,     setRoleFilters]     = React.useState<Set<string>>(new Set())  // empty = all
@@ -632,14 +673,14 @@ export default function IntelMap() {
   const [newSpot,         setNewSpot]         = React.useState({
     title: '', roles: ['MG'] as string[], side: 'Both' as SpotSide,
     notes: '', youtube: '', images: [] as string[], imageFiles: [] as File[], size: 12,
-    requiresBuildable: false,
+    requiresBuildable: false, verified: false, patchVersion: '',
   })
 
   // ── spot edit state
   const [editSpot, setEditSpot] = React.useState({
     title: '', roles: ['MG'] as string[], side: 'Both' as SpotSide,
     notes: '', youtube: '', size: 12,
-    requiresBuildable: false,
+    requiresBuildable: false, verified: false, patchVersion: '',
     images:    [] as string[],
     cones:     null as SpotConeSet | null,
     fireLines: null as SpotLineSet | null,
@@ -788,7 +829,7 @@ export default function IntelMap() {
 
   // ── helpers
   const resetNewSpotState = React.useCallback(() => {
-    setNewSpot({ title: '', roles: ['MG'], side: 'Both', notes: '', youtube: '', images: [], imageFiles: [], size: 12, requiresBuildable: false })
+    setNewSpot({ title: '', roles: ['MG'], side: 'Both', notes: '', youtube: '', images: [], imageFiles: [], size: 12, requiresBuildable: false, verified: false, patchVersion: '' })
     if (fileInputRef.current) fileInputRef.current.value = ''
   }, [])
 
@@ -822,6 +863,17 @@ export default function IntelMap() {
       spots: map.spots.map((s) => s.id === spotId ? { ...s, ...patch } : s),
     })))
   }, [])
+
+  // ── save a snapshot to spot_history before any destructive change
+  const saveSpotHistory = async (spot: Spot) => {
+    if (typeof spot.id !== 'number') return
+    await supabase.from('spot_history').insert({
+      spot_id:          spot.id,
+      snapshot:         spot,
+      changed_by:       userId,
+      changed_by_name:  userName,
+    })
+  }
 
   // ── effects: initial load
   React.useEffect(() => {
@@ -963,6 +1015,49 @@ export default function IntelMap() {
       document.body.style.overflow = prevOverflow
     }
   }, [scale])
+
+  // ── effects: keyboard shortcuts
+  React.useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      if (e.key === 'Escape') {
+        if (placementMode) { resetPlacementState(); return }
+        if (routeDrawMode) { setRouteDrawMode(false); setDrawingPoints([]); return }
+        if (editingSpotId) { cancelEditSpot(); return }
+        if (showAddSpot)   { setShowAddSpot(false); setPendingPlacement(null); return }
+        if (selectedSpot)  { setSelectedSpot(null); return }
+      }
+      if (e.key === 'e' && selectedSpot && !editingSpotId && canEdit) startEditingSpot()
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault()
+        const spots = sortedSpots
+        if (!spots.length) return
+        const idx = selectedSpot ? spots.findIndex((s) => s.id === selectedSpot.id) : -1
+        const next = e.key === 'ArrowDown'
+          ? spots[Math.min(idx + 1, spots.length - 1)]
+          : spots[Math.max(idx - 1, 0)]
+        if (next) selectSpot(next)
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  })
+
+  // ── effects: load comments when spot selected
+  React.useEffect(() => {
+    if (!selectedSpot || typeof selectedSpot.id !== 'number') {
+      setComments([]); return
+    }
+    setIsLoadingComments(true)
+    supabase.from('spot_comments')
+      .select('*').eq('spot_id', selectedSpot.id)
+      .order('created_at', { ascending: true })
+      .then(({ data }) => {
+        setComments((data || []) as SpotComment[])
+        setIsLoadingComments(false)
+      })
+  }, [selectedSpot?.id])
 
   // ── coordinate helper
   // Must use mapContainerRef (the inner aspect-square div), not viewportRef (outer div).
@@ -1204,6 +1299,8 @@ export default function IntelMap() {
       side: newSpot.side, notes: newSpot.notes, youtube: newSpot.youtube.trim() || null,
       images: newSpot.images, x: pendingPlacement.x, y: pendingPlacement.y,
       size: clampSpotSize(newSpot.size), requiresBuildable: newSpot.requiresBuildable,
+      verified: newSpot.verified, patchVersion: newSpot.patchVersion,
+      createdBy: userId, createdByName: userName,
       cones: null, fireLines: null, routes: [], pending: true,
     }
 
@@ -1220,6 +1317,8 @@ export default function IntelMap() {
         notes: newSpot.notes.trim(), youtube: newSpot.youtube.trim() || null,
         images: uploadedUrls, x: pendingPlacement.x, y: pendingPlacement.y,
         size: clampSpotSize(newSpot.size), requires_buildable: newSpot.requiresBuildable,
+        verified: newSpot.verified, patch_version: newSpot.patchVersion,
+        created_by: userId, created_by_name: userName,
         cone: null, fire_lines: null, routes: [],
       }).select().single()
       if (error) throw error
@@ -1250,6 +1349,8 @@ export default function IntelMap() {
       side:  selectedSpot.side, notes: selectedSpot.notes,
       youtube: selectedSpot.youtube || '', size: clampSpotSize(selectedSpot.size),
       requiresBuildable: selectedSpot.requiresBuildable || false,
+      verified: selectedSpot.verified || false,
+      patchVersion: selectedSpot.patchVersion || '',
       images: selectedSpot.images || [],
       cones: selectedSpot.cones || null, fireLines: selectedSpot.fireLines || null,
       routes: selectedSpot.routes || [],
@@ -1267,7 +1368,9 @@ export default function IntelMap() {
     const cleanedLines  = cleanupLineSet(editSpot.fireLines)
     const cleanedRoutes = editSpot.routes.filter((r) => r.points.length >= 2)
 
-    // Upload any newly added files then combine with kept existing images
+    // Save snapshot before overwriting
+    await saveSpotHistory(selectedSpot)
+
     let uploadedUrls: string[] = []
     if (editSpotNewFiles.length > 0) {
       try { uploadedUrls = await Promise.all(editSpotNewFiles.map(uploadImage)) }
@@ -1280,6 +1383,10 @@ export default function IntelMap() {
       side: editSpot.side, notes: editSpot.notes.trim(),
       youtube: editSpot.youtube.trim() || null, size: clampSpotSize(editSpot.size),
       requires_buildable: editSpot.requiresBuildable,
+      verified: editSpot.verified,
+      patch_version: editSpot.patchVersion,
+      last_edited_by: userId, last_edited_by_name: userName,
+      last_edited_at: new Date().toISOString(),
       images: finalImages,
       cone: cleanedCones, fire_lines: cleanedLines, routes: cleanedRoutes,
     }).eq('id', selectedSpot.id)
@@ -1291,22 +1398,60 @@ export default function IntelMap() {
     setEditingSpotId(null); setRouteDrawMode(false); resetPlacementState()
   }
 
-  const deleteSelectedSpot = async () => {
+  const deleteSelectedSpot = () => {
     if (!selectedSpot || selectedSpot.pending || typeof selectedSpot.id !== 'number') return
-    if (!window.confirm(`Delete "${selectedSpot.title}"? This cannot be undone.`)) return
-    // Optimistic: remove from UI immediately so it feels instant
-    const deletedId = selectedSpot.id
-    setSelectedSpot(null)
-    setEditingSpotId(null)
-    
-    removeSpotFromMaps(deletedId)
-    const { error } = await supabase.from('spots').delete().eq('id', deletedId)
-    if (error) {
-      console.error('Delete error:', error)
-      // Re-fetch to restore state if the DB delete failed
-      const { data } = await supabase.from('spots').select('*').eq('id', deletedId).single()
-      if (data) addSpotToMaps(normalizeSpot(data))
+    const spotToDelete = selectedSpot
+    // Cancel any existing undo toast
+    if (undoToast) { clearTimeout(undoToast.timerId); setUndoToast(null) }
+    // Optimistically remove from UI immediately
+    setSelectedSpot(null); setEditingSpotId(null)
+    removeSpotFromMaps(spotToDelete.id)
+    // Save history snapshot then start 6-second undo window
+    saveSpotHistory(spotToDelete)
+    const timerId = setTimeout(async () => {
+      const { error } = await supabase.from('spots').delete().eq('id', spotToDelete.id)
+      if (error) {
+        console.error('Delete error:', error)
+        addSpotToMaps(spotToDelete) // restore on failure
+      }
+      setUndoToast(null)
+    }, 6000)
+    setUndoToast({ spot: spotToDelete, timerId })
+  }
+
+  const undoDelete = () => {
+    if (!undoToast) return
+    clearTimeout(undoToast.timerId)
+    addSpotToMaps(undoToast.spot)
+    setSelectedSpot(undoToast.spot)
+    setUndoToast(null)
+  }
+
+  const postComment = async () => {
+    if (!selectedSpot || typeof selectedSpot.id !== 'number') return
+    const content = commentText.trim()
+    if (!content) return
+    setCommentText('')
+    const tempComment: SpotComment = {
+      id: Date.now(), spot_id: selectedSpot.id,
+      user_id: userId, user_name: userName,
+      content, created_at: new Date().toISOString(),
     }
+    setComments((p) => [...p, tempComment])
+    const { data, error } = await supabase.from('spot_comments')
+      .insert({ spot_id: selectedSpot.id, user_id: userId, user_name: userName, content })
+      .select().single()
+    if (error) {
+      console.error('Comment error:', error)
+      setComments((p) => p.filter((c) => c.id !== tempComment.id))
+    } else if (data) {
+      setComments((p) => p.map((c) => c.id === tempComment.id ? data as SpotComment : c))
+    }
+  }
+
+  const deleteComment = async (commentId: number) => {
+    setComments((p) => p.filter((c) => c.id !== commentId))
+    await supabase.from('spot_comments').delete().eq('id', commentId)
   }
 
   const copySelectedSpot = async () => {
@@ -1586,7 +1731,7 @@ export default function IntelMap() {
             </div>
             {/* Actions */}
             <div className="flex flex-col gap-2">
-              <button onClick={openAddSpot} className={`w-full ${showAddSpot ? buttonClass : softButtonClass}`}>
+              <button onClick={openAddSpot} disabled={!canAdd} className={`w-full ${showAddSpot ? buttonClass : softButtonClass} ${!canAdd ? 'cursor-not-allowed opacity-40' : ''}`}>
                 {showAddSpot ? 'Cancel Add Spot' : 'Add Spot'}
               </button>
               <a href="/admin" className={`${buttonClass} flex w-full items-center justify-center`}>
@@ -1979,6 +2124,23 @@ export default function IntelMap() {
                       <div className="text-xs text-zinc-500">Spot needs a buildable to function</div>
                     </div>
                   </label>
+                  <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3 space-y-3">
+                    <label className="flex cursor-pointer items-center gap-3">
+                      <input type="checkbox" checked={newSpot.verified} className="accent-emerald-500 h-4 w-4"
+                        onChange={(e) => setNewSpot((p) => ({ ...p, verified: e.target.checked }))} />
+                      <div>
+                        <div className="text-sm font-medium text-white">Verified</div>
+                        <div className="text-xs text-zinc-500">Tested and works in current patch</div>
+                      </div>
+                    </label>
+                    <div>
+                      <label className="mb-1.5 block text-[10px] uppercase tracking-[0.24em] text-zinc-500">Patch Version</label>
+                      <input value={newSpot.patchVersion}
+                        onChange={(e) => setNewSpot((p) => ({ ...p, patchVersion: e.target.value }))}
+                        placeholder="e.g. 14.3 or U14"
+                        className={tinyInputClass + ' w-full'} />
+                    </div>
+                  </div>
                   <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3">
                     <label className="mb-2 block text-sm text-zinc-300">Up to 5 images</label>
                     <input ref={fileInputRef} type="file" accept="image/*" multiple onChange={handleImageUpload}
@@ -2043,6 +2205,7 @@ export default function IntelMap() {
                           </span>
                           <span className={`font-medium ${isSelected ? 'text-white' : 'text-zinc-200'}`}>{spot.title}</span>
                           {spot.requiresBuildable && <span className="rounded-full bg-amber-900/50 px-2 py-0.5 text-[10px] text-amber-300">Buildable</span>}
+                          {spot.verified && <span className="rounded-full bg-emerald-900/50 px-2 py-0.5 text-[10px] text-emerald-300">✓</span>}
                           {spot.pending && <span className="rounded-full border border-emerald-300/20 bg-emerald-950/70 px-2 py-0.5 text-[10px] text-emerald-100">Saving</span>}
                           <span className={`ml-auto flex-shrink-0 text-zinc-600 text-xs transition-transform duration-200 ${isSelected ? 'rotate-180' : ''}`}>▼</span>
                         </div>
@@ -2194,6 +2357,25 @@ export default function IntelMap() {
                                   onChange={(e) => setEditSpot((p) => ({ ...p, requiresBuildable: e.target.checked }))} />
                                 <div><div className="text-sm font-medium text-white">Requires Buildable</div><div className="text-xs text-zinc-500">Spot needs a buildable</div></div>
                               </label>
+
+                              {/* Verified / patch status */}
+                              <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3 space-y-3">
+                                <label className="flex cursor-pointer items-center gap-3">
+                                  <input type="checkbox" checked={editSpot.verified} className="accent-emerald-500 h-4 w-4"
+                                    onChange={(e) => setEditSpot((p) => ({ ...p, verified: e.target.checked }))} />
+                                  <div>
+                                    <div className="text-sm font-medium text-white">Verified</div>
+                                    <div className="text-xs text-zinc-500">Spot has been tested and works in current patch</div>
+                                  </div>
+                                </label>
+                                <div>
+                                  <label className="mb-1.5 block text-[10px] uppercase tracking-[0.24em] text-zinc-500">Patch Version</label>
+                                  <input value={editSpot.patchVersion}
+                                    onChange={(e) => setEditSpot((p) => ({ ...p, patchVersion: e.target.value }))}
+                                    placeholder="e.g. 14.3 or U14"
+                                    className={tinyInputClass + ' w-full'} />
+                                </div>
+                              </div>
                               <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3">
                                 <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">Photos ({editSpot.images.length + editSpotNewPreviews.length}/5)</label>
                                 {editSpot.images.length > 0 && (
@@ -2257,11 +2439,29 @@ export default function IntelMap() {
                                 {selectedSpot.roles.map((r) => <span key={r} className={`rounded-full px-2.5 py-0.5 text-white ${getRoleColor(r)}`}>{r}</span>)}
                                 <span className={`rounded-full px-2.5 py-0.5 ${getSideClasses(selectedSpot.side).badge}`}>{selectedSpot.side}</span>
                                 {selectedSpot.requiresBuildable && <span className="rounded-full border border-amber-400/30 bg-amber-900/40 px-2.5 py-0.5 text-amber-200">Buildable</span>}
+                                {selectedSpot.verified
+                                  ? <span className="rounded-full border border-emerald-400/40 bg-emerald-800/50 px-2.5 py-0.5 text-emerald-200">✓ Verified{selectedSpot.patchVersion ? ` · ${selectedSpot.patchVersion}` : ''}</span>
+                                  : <span className="rounded-full border border-zinc-600/40 bg-zinc-800/50 px-2.5 py-0.5 text-zinc-400">Unverified</span>
+                                }
                                 {selectedSpot.cones?.Axis    && <span className="rounded-full border border-red-300/15 bg-red-900/35 px-2.5 py-0.5 text-white">Axis Cone</span>}
                                 {selectedSpot.cones?.Allies  && <span className="rounded-full border border-blue-300/15 bg-blue-900/35 px-2.5 py-0.5 text-white">Allies Cone</span>}
                                 {selectedSpot.fireLines?.Axis   && <span className="rounded-full border border-red-300/15 bg-red-900/35 px-2.5 py-0.5 text-white">Axis Snipe</span>}
                                 {selectedSpot.fireLines?.Allies && <span className="rounded-full border border-blue-300/15 bg-blue-900/35 px-2.5 py-0.5 text-white">Allies Snipe</span>}
                                 {selectedSpot.pending && <span className="rounded-full border border-emerald-300/20 bg-emerald-950/70 px-2.5 py-0.5 text-emerald-100">Saving...</span>}
+                              </div>
+
+                              {/* Author / edit info */}
+                              <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-zinc-500">
+                                {selectedSpot.createdByName && (
+                                  <span>Added by <span className="text-zinc-300">{selectedSpot.createdByName}</span>
+                                    {selectedSpot.created_at && <span className="ml-1 text-zinc-600">· {new Date(selectedSpot.created_at).toLocaleDateString()}</span>}
+                                  </span>
+                                )}
+                                {selectedSpot.lastEditedByName && (
+                                  <span>Edited by <span className="text-zinc-300">{selectedSpot.lastEditedByName}</span>
+                                    {selectedSpot.lastEditedAt && <span className="ml-1 text-zinc-600">· {new Date(selectedSpot.lastEditedAt).toLocaleDateString()}</span>}
+                                  </span>
+                                )}
                               </div>
                               {selectedSpot.notes && <p className="text-sm leading-6 text-zinc-300">{selectedSpot.notes}</p>}
                               {!selectedSpot.pending && (
@@ -2322,10 +2522,61 @@ export default function IntelMap() {
                               {selectedSpot.youtube && !selectedSpotEmbedUrl && (
                                 <a href={selectedSpot.youtube} target="_blank" rel="noreferrer" className="inline-flex w-fit items-center rounded-2xl border border-emerald-300/15 bg-emerald-900/35 px-4 py-2 text-sm font-medium hover:bg-emerald-800/55">Open on YouTube ↗</a>
                               )}
+                              {/* ── Comments thread */}
+                              <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3">
+                                <div className="mb-2 text-xs font-medium uppercase tracking-[0.2em] text-zinc-400">
+                                  Comments {comments.length > 0 && <span className="text-zinc-500">({comments.length})</span>}
+                                </div>
+                                {isLoadingComments ? (
+                                  <div className="py-2 text-xs text-zinc-600">Loading...</div>
+                                ) : comments.length === 0 ? (
+                                  <div className="py-1 text-xs text-zinc-600">No comments yet. Be the first.</div>
+                                ) : (
+                                  <div className="mb-3 space-y-2 max-h-48 overflow-y-auto">
+                                    {comments.map((c) => (
+                                      <div key={c.id} className="group flex gap-2">
+                                        <div className="flex-1 rounded-xl border border-emerald-400/8 bg-emerald-950/25 px-3 py-2">
+                                          <div className="flex items-center gap-2 mb-1">
+                                            <span className="text-xs font-medium text-emerald-300">{c.user_name}</span>
+                                            <span className="text-[10px] text-zinc-600">{new Date(c.created_at).toLocaleDateString()}</span>
+                                          </div>
+                                          <p className="text-sm text-zinc-300 leading-5">{c.content}</p>
+                                        </div>
+                                        {(c.user_id === userId || userRole === 'admin') && (
+                                          <button onClick={() => deleteComment(c.id)}
+                                            className="opacity-0 group-hover:opacity-100 self-start mt-1 text-zinc-600 hover:text-red-400 transition text-xs">✕</button>
+                                        )}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                                {/* Post comment */}
+                                <div className="flex gap-2 mt-2">
+                                  <input
+                                    value={commentText}
+                                    onChange={(e) => setCommentText(e.target.value)}
+                                    onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); postComment() } }}
+                                    placeholder="Add a comment..."
+                                    className={tinyInputClass + ' flex-1'}
+                                  />
+                                  <button onClick={postComment} disabled={!commentText.trim()}
+                                    className={`rounded-xl border border-emerald-300/25 bg-emerald-600/80 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed`}>
+                                    Post
+                                  </button>
+                                </div>
+                              </div>
+
+                              {/* Keyboard hint */}
+                              <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-zinc-700">
+                                <span><kbd className="rounded bg-zinc-800 px-1 py-0.5">↑↓</kbd> navigate</span>
+                                {canEdit && <span><kbd className="rounded bg-zinc-800 px-1 py-0.5">E</kbd> edit</span>}
+                                <span><kbd className="rounded bg-zinc-800 px-1 py-0.5">Esc</kbd> close</span>
+                              </div>
+
                               <div className="flex flex-wrap gap-2 pt-1">
-                                <button onClick={startEditingSpot} disabled={!!selectedSpot.pending} className={`${softButtonClass} ${selectedSpot.pending ? 'cursor-not-allowed opacity-60' : ''}`}>Edit</button>
-                                <button onClick={copySelectedSpot} disabled={!!selectedSpot.pending} className={`${softButtonClass} ${selectedSpot.pending ? 'cursor-not-allowed opacity-60' : ''}`}>Copy</button>
-                                <button onClick={deleteSelectedSpot} disabled={!!selectedSpot.pending} className={`inline-flex items-center rounded-2xl border border-red-700 bg-red-900/60 px-4 py-2 text-sm font-medium hover:bg-red-800/70 ${selectedSpot.pending ? 'cursor-not-allowed opacity-60' : ''}`}>Delete</button>
+                                {canEdit && <button onClick={startEditingSpot} disabled={!!selectedSpot.pending} className={`${softButtonClass} ${selectedSpot.pending ? 'cursor-not-allowed opacity-60' : ''}`}>Edit</button>}
+                                {canEdit && <button onClick={copySelectedSpot} disabled={!!selectedSpot.pending} className={`${softButtonClass} ${selectedSpot.pending ? 'cursor-not-allowed opacity-60' : ''}`}>Copy</button>}
+                                {canDelete && <button onClick={deleteSelectedSpot} disabled={!!selectedSpot.pending} className={`inline-flex items-center rounded-2xl border border-red-700 bg-red-900/60 px-4 py-2 text-sm font-medium hover:bg-red-800/70 ${selectedSpot.pending ? 'cursor-not-allowed opacity-60' : ''}`}>Delete</button>}
                               </div>
                             </div>
                           )}
@@ -2339,6 +2590,19 @@ export default function IntelMap() {
           </div>
         </div>
       </div>
+
+      {/* ── Undo delete toast */}
+      {undoToast && (
+        <div className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 flex items-center gap-3 rounded-2xl border border-red-500/30 bg-[rgba(20,5,5,0.95)] px-5 py-3 shadow-[0_8px_32px_rgba(0,0,0,0.6)] backdrop-blur-xl">
+          <span className="text-sm text-zinc-200">
+            <span className="font-medium text-white">"{undoToast.spot.title}"</span> deleted
+          </span>
+          <button onClick={undoDelete}
+            className="rounded-xl border border-emerald-400/40 bg-emerald-600/80 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-500 transition">
+            Undo
+          </button>
+        </div>
+      )}
 
       {/* Lightbox */}
       {lightboxImage && (

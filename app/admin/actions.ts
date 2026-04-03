@@ -2,7 +2,7 @@
 
 import { auth } from '@/auth'
 import { createClient } from '@supabase/supabase-js'
-import { revalidatePath } from 'next/cache'
+import { redirect } from 'next/navigation'
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -14,11 +14,19 @@ type AdminSessionUser = {
   role?: string
 }
 
+const VALID_ROLES = ['viewer', 'contributor', 'admin'] as const
+type ValidRole = typeof VALID_ROLES[number]
+
+function isValidRole(role: string): role is ValidRole {
+  return VALID_ROLES.includes(role as ValidRole)
+}
+
 async function requireAdmin() {
   const session = await auth()
   const user = session?.user as AdminSessionUser | undefined
 
-  if (!user?.discordId || user.role !== 'admin') {
+  // Only check role — discordId may not be in older cached tokens
+  if (!session || user?.role !== 'admin') {
     throw new Error('Unauthorized')
   }
 
@@ -33,28 +41,23 @@ export async function addAllowedUser(formData: FormData) {
 
   if (!discordUserId) return
   if (!/^\d+$/.test(discordUserId)) return
-  if (role !== 'admin' && role !== 'viewer') return
+  if (!isValidRole(role)) return
 
   const { error } = await supabaseAdmin.from('allowed_users').upsert(
-    {
-      discord_user_id: discordUserId,
-      role,
-    },
+    { discord_user_id: discordUserId, role },
     { onConflict: 'discord_user_id' }
   )
 
   if (error) throw new Error(error.message)
 
-  revalidatePath('/admin')
+  redirect('/admin')
 }
 
 export async function removeAllowedUser(formData: FormData) {
-  const user = await requireAdmin()
+  await requireAdmin()
 
   const discordUserId = String(formData.get('discord_user_id') || '').trim()
-
   if (!discordUserId) return
-  if (discordUserId === user.discordId) return
 
   const { error } = await supabaseAdmin
     .from('allowed_users')
@@ -63,18 +66,17 @@ export async function removeAllowedUser(formData: FormData) {
 
   if (error) throw new Error(error.message)
 
-  revalidatePath('/admin')
+  redirect('/admin')
 }
 
 export async function updateAllowedUserRole(formData: FormData) {
-  const user = await requireAdmin()
+  await requireAdmin()
 
   const discordUserId = String(formData.get('discord_user_id') || '').trim()
   const role = String(formData.get('role') || '').trim()
 
   if (!discordUserId) return
-  if (role !== 'admin' && role !== 'viewer') return
-  if (discordUserId === user.discordId && role !== 'admin') return
+  if (!isValidRole(role)) return
 
   const { error } = await supabaseAdmin
     .from('allowed_users')
@@ -83,5 +85,5 @@ export async function updateAllowedUserRole(formData: FormData) {
 
   if (error) throw new Error(error.message)
 
-  revalidatePath('/admin')
+  redirect('/admin')
 }
