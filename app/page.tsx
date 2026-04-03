@@ -737,6 +737,17 @@ export default function IntelMap() {
   const [overlayBroken,  setOverlayBroken]  = React.useState<Record<string, boolean>>({})
   const [naturalAspect,  setNaturalAspect]  = React.useState<number>(1)
   const [containerDims,  setContainerDims]  = React.useState<{ w: number; h: number } | null>(null)
+  // ── local display size offset — stored in localStorage, never written to DB
+  // Each user can shift all dot sizes up/down without affecting others.
+  const [localSizeOffset, setLocalSizeOffset] = React.useState<number>(() => {
+    if (typeof window === 'undefined') return 0
+    return Number(localStorage.getItem('hll_dot_size_offset') ?? '0')
+  })
+  // Per-spot local size overrides — keyed by spot id, session only
+  const [localSpotSizes, setLocalSpotSizes] = React.useState<Record<string | number, number>>(() => {
+    if (typeof window === 'undefined') return {}
+    try { return JSON.parse(localStorage.getItem('hll_spot_sizes') ?? '{}') } catch { return {} }
+  })
 
   // ── lightbox
   const [lightboxImage, setLightboxImage] = React.useState<string | null>(null)
@@ -769,8 +780,10 @@ export default function IntelMap() {
   const getRoleShape  = (r: string): MarkerShape => FIXED_ROLES.find((f) => f.name === r)?.shape || 'circle'
 
   const getRenderedSpotSize = (spot: Spot) => {
-    const r = spot.roles?.[0] || spot.role || 'MG'
-    return r === 'Tank' ? Math.max(5, Math.round(spot.size * 0.6)) : spot.size
+    const r           = spot.roles?.[0] || spot.role || 'MG'
+    const base        = r === 'Tank' ? Math.max(2, Math.round(spot.size * 0.6)) : spot.size
+    const spotOverride = localSpotSizes[spot.id] ?? 0
+    return Math.max(2, Math.min(30, base + localSizeOffset + spotOverride))
   }
 
   const primaryEditRole = editSpot.roles?.[0] || 'MG'
@@ -1828,8 +1841,24 @@ export default function IntelMap() {
               </select>
             </>
           )}
-          <div className="ml-auto text-[10px] uppercase tracking-[0.20em] text-zinc-600">
-            {filteredSpots.length} spot{filteredSpots.length !== 1 ? 's' : ''}
+          <div className="ml-auto flex items-center gap-3">
+            {/* Universal dot size — local only, stored in localStorage */}
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] uppercase tracking-[0.20em] text-zinc-500">Dot Size</span>
+              <input type="range" min="-8" max="12" step="1" value={localSizeOffset}
+                onChange={(e) => {
+                  const v = Number(e.target.value)
+                  setLocalSizeOffset(v)
+                  localStorage.setItem('hll_dot_size_offset', String(v))
+                }}
+                className="w-24 accent-emerald-500" />
+              <button onClick={() => { setLocalSizeOffset(0); localStorage.setItem('hll_dot_size_offset', '0') }}
+                className="text-[10px] text-zinc-600 hover:text-zinc-400 transition">reset</button>
+              <span className="text-[9px] text-zinc-600 whitespace-nowrap">👁 only you</span>
+            </div>
+            <span className="text-[10px] uppercase tracking-[0.20em] text-zinc-600">
+              {filteredSpots.length} spot{filteredSpots.length !== 1 ? 's' : ''}
+            </span>
           </div>
         </div>
 
@@ -2290,6 +2319,7 @@ export default function IntelMap() {
                                 <input type="range" min="2" max="20" value={clampSpotSize(editSpot.size)}
                                   onChange={(e) => updateEditSpotSize(Number(e.target.value))} className="w-full accent-emerald-500" />
                                 <span className="w-6 text-xs text-zinc-300">{clampSpotSize(editSpot.size)}</span>
+                                <span className="text-[9px] text-emerald-600 whitespace-nowrap">👥 everyone</span>
                               </div>
                               {(canUseCone || canUseLine) && (
                                 <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3">
@@ -2500,12 +2530,21 @@ export default function IntelMap() {
                                 )}
                               </div>
                               {selectedSpot.notes && <p className="text-sm leading-6 text-zinc-300">{selectedSpot.notes}</p>}
+                              {/* Local size override — only visible to you */}
                               {!selectedSpot.pending && (
-                                <div className="flex items-center gap-2 rounded-2xl border border-emerald-400/10 bg-emerald-950/25 px-3 py-2">
-                                  <label className="text-[11px] uppercase tracking-[0.28em] text-zinc-400 whitespace-nowrap">Size</label>
-                                  <input type="range" min="2" max="20" value={clampSpotSize(selectedSpot.size)}
-                                    onChange={(e) => updateSelectedSpotSize(Number(e.target.value))} className="w-full accent-emerald-500" />
-                                  <span className="w-6 text-xs text-zinc-300">{clampSpotSize(selectedSpot.size)}</span>
+                                <div className="flex items-center gap-2 rounded-2xl border border-zinc-700/40 bg-zinc-900/40 px-3 py-2">
+                                  <label className="text-[11px] uppercase tracking-[0.28em] text-zinc-500 whitespace-nowrap">Size</label>
+                                  <input type="range" min="-8" max="12" step="1"
+                                    value={localSpotSizes[selectedSpot.id] ?? 0}
+                                    onChange={(e) => {
+                                      const v = Number(e.target.value)
+                                      const next = { ...localSpotSizes, [selectedSpot.id]: v }
+                                      setLocalSpotSizes(next)
+                                      localStorage.setItem('hll_spot_sizes', JSON.stringify(next))
+                                    }}
+                                    className="w-full accent-zinc-500" />
+                                  <span className="w-4 text-xs text-zinc-500">{(localSpotSizes[selectedSpot.id] ?? 0) > 0 ? '+' : ''}{localSpotSizes[selectedSpot.id] ?? 0}</span>
+                                  <span className="text-[9px] text-zinc-600 whitespace-nowrap">👁 only you</span>
                                 </div>
                               )}
                               {(selectedSpot.cones?.Axis || selectedSpot.cones?.Allies) && (
