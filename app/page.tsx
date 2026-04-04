@@ -2,6 +2,7 @@
 
 import React from 'react'
 import { useSession } from 'next-auth/react'
+import { useSearchParams, useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
@@ -625,9 +626,47 @@ const tinyInputClass  = 'rounded-xl border border-emerald-300/15 bg-emerald-950/
 
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
 
-export default function IntelMap() {
+// ── Animated expand hook — measures real content height and animates to/from it
+function useAnimatedExpand(isOpen: boolean) {
+  const ref = React.useRef<HTMLDivElement | null>(null)
+  const [height, setHeight] = React.useState(0)
+  const [visible, setVisible] = React.useState(isOpen)
+
+  React.useEffect(() => {
+    if (isOpen) {
+      setVisible(true)
+      requestAnimationFrame(() => {
+        if (ref.current) setHeight(ref.current.scrollHeight)
+      })
+    } else {
+      setHeight(0)
+      const t = setTimeout(() => setVisible(false), 280)
+      return () => clearTimeout(t)
+    }
+  }, [isOpen])
+
+  return { ref, height, visible }
+}
+
+// Wrapper that animates height open/close
+function ExpandedSpotContent({ isOpen, children }: { isOpen: boolean; children: React.ReactNode }) {
+  const { ref, height, visible } = useAnimatedExpand(isOpen)
+  if (!visible) return null
+  // Cap at 65vh so the list never scrolls out of view when a tall card opens
+  const cappedHeight = Math.min(height, typeof window !== 'undefined' ? window.innerHeight * 0.65 : 9999)
+  return (
+    <div style={{ height: `${cappedHeight}px`, overflow: 'hidden', transition: 'height 260ms cubic-bezier(0.4,0,0.2,1)', opacity: height > 0 ? 1 : 0 }}
+      className="transition-opacity duration-200">
+      <div ref={ref}>{children}</div>
+    </div>
+  )
+}
+
+function IntelMapInner() {
   // ── session & permissions
   const { data: session } = useSession()
+  const searchParams = useSearchParams()
+  const router       = useRouter()
   const userRole     = (session?.user as any)?.role ?? 'viewer'
   const userId       = (session?.user as any)?.id   ?? ''
   const userName     = session?.user?.name           ?? 'Unknown'
@@ -644,6 +683,7 @@ export default function IntelMap() {
   const [selectedSpot,   setSelectedSpot]   = React.useState<Spot | null>(null)
   const [editingSpotId,  setEditingSpotId]  = React.useState<number | null>(null)
   const [selectedRouteId,setSelectedRouteId]= React.useState<string | null>(null)
+  const [isDrawerOpen,   setIsDrawerOpen]   = React.useState(false)
 
   // ── undo delete state
   const [undoToast,      setUndoToast]      = React.useState<{ spot: Spot; timerId: ReturnType<typeof setTimeout> } | null>(null)
@@ -652,6 +692,19 @@ export default function IntelMap() {
   const [comments,       setComments]       = React.useState<SpotComment[]>([])
   const [commentText,    setCommentText]    = React.useState('')
   const [isLoadingComments, setIsLoadingComments] = React.useState(false)
+
+  // ── activity feed state
+  const [feedOpen,       setFeedOpen]       = React.useState(() => {
+    if (typeof window === 'undefined') return false
+    return localStorage.getItem('hll_feed_open') !== 'false'
+  })
+  const [feedItems,      setFeedItems]      = React.useState<any[]>([])
+  const [feedLoading,    setFeedLoading]    = React.useState(false)
+  const [feedLastSeen,   setFeedLastSeen]   = React.useState<string>(() => {
+    if (typeof window === 'undefined') return ''
+    return localStorage.getItem('hll_feed_last_seen') ?? ''
+  })
+  const [feedHasNew,     setFeedHasNew]     = React.useState(false)
 
   // ── list filter state
   const [roleFilters,     setRoleFilters]     = React.useState<Set<string>>(new Set())  // empty = all
@@ -912,7 +965,21 @@ export default function IntelMap() {
       if (se) console.error('Spots load error:', se)
       const built = buildMapsWithSpots(mapsData || [], spotsData || [])
       setMaps(built)
-      if (built.length > 0) {
+
+      // Handle ?spot= deep link — switch to the right map and select the spot
+      const spotParam = searchParams.get('spot')
+      if (spotParam && built.length > 0) {
+        const spotId = Number(spotParam)
+        const targetMap = built.find((m) => m.spots.some((s) => s.id === spotId))
+        if (targetMap) {
+          setSelectedMapId(targetMap.id)
+          const spot = targetMap.spots.find((s) => s.id === spotId)
+          if (spot) {
+            // Defer so map change effects settle first
+            setTimeout(() => selectSpot(spot), 50)
+          }
+        }
+      } else if (built.length > 0) {
         setSelectedMapId((prev) => built.some((m) => m.id === prev) ? prev : built[0].id)
       }
       setIsLoading(false)
@@ -949,7 +1016,7 @@ export default function IntelMap() {
   // ── effects: map change resets
   React.useEffect(() => {
     const currentMap = maps.find((m) => m.id === selectedMapId)
-    setSelectedSpot(null)
+    setSelectedSpot(null); setIsDrawerOpen(false)
     setSearchTerm(''); setRoleFilters(new Set()); setSideFilters(new Set()); setBuildableFilter(false); setSortMode('alphabetical')
     setScale(1); setPosition({ x: 0, y: 0 })
     setShowAddSpot(false); setPendingPlacement(null); setShowSatellite(false)
@@ -1078,7 +1145,7 @@ export default function IntelMap() {
         if (routeDrawMode) { setRouteDrawMode(false); setDrawingPoints([]); return }
         if (editingSpotId) { cancelEditSpot(); return }
         if (showAddSpot)   { setShowAddSpot(false); setPendingPlacement(null); return }
-        if (selectedSpot)  { setSelectedSpot(null); return }
+        if (selectedSpot)  { setSelectedSpot(null); setIsDrawerOpen(false); return }
       }
       if (e.key === 'e' && selectedSpot && !editingSpotId && canEdit) startEditingSpot()
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
@@ -1095,6 +1162,48 @@ export default function IntelMap() {
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
   })
+
+  // ── effects: load activity feed
+  const loadFeed = React.useCallback(async () => {
+    setFeedLoading(true)
+    const { data } = await supabase
+      .from('spot_history')
+      .select('id, spot_id, changed_by_name, changed_at, snapshot')
+      .order('changed_at', { ascending: false })
+      .limit(20)
+    const items = data || []
+    setFeedItems(items)
+    // Check if any items are newer than last seen
+    if (items.length > 0) {
+      const newest = items[0]?.changed_at ?? ''
+      setFeedHasNew(newest > feedLastSeen)
+    }
+    setFeedLoading(false)
+  }, [feedLastSeen])
+
+  React.useEffect(() => {
+    loadFeed()
+    // Refresh feed every 60 seconds
+    const interval = setInterval(loadFeed, 60_000)
+    return () => clearInterval(interval)
+  }, [loadFeed])
+
+  const openFeed = () => {
+    setFeedOpen(true)
+    localStorage.setItem('hll_feed_open', 'true')
+    // Mark all as seen
+    if (feedItems.length > 0) {
+      const newest = feedItems[0]?.changed_at ?? ''
+      setFeedLastSeen(newest)
+      setFeedHasNew(false)
+      localStorage.setItem('hll_feed_last_seen', newest)
+    }
+  }
+
+  const closeFeed = () => {
+    setFeedOpen(false)
+    localStorage.setItem('hll_feed_open', 'false')
+  }
 
   // ── effects: load comments when spot selected
   React.useEffect(() => {
@@ -1631,10 +1740,16 @@ export default function IntelMap() {
 
   // ── spot selection
   const selectSpot = (spot: Spot) => {
-    setSelectedSpot(spot); setShowAddSpot(false); setEditingSpotId(null)
+    setSelectedSpot(spot); setShowAddSpot(false); setEditingSpotId(null); setIsDrawerOpen(true)
     resetPlacementState()
     setRouteDrawMode(false); setDrawingPoints([])
     setSelectedRouteId(null)
+    // Push spot ID into URL so it can be shared
+    if (typeof spot.id === 'number') {
+      const url = new URL(window.location.href)
+      url.searchParams.set('spot', String(spot.id))
+      window.history.replaceState(null, '', url.toString())
+    }
     // Scroll the spot card into view in the list
     requestAnimationFrame(() => {
       const el = spotItemRefs.current.get(spot.id)
@@ -1716,7 +1831,7 @@ export default function IntelMap() {
             <div>
               <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">Map</label>
               <select value={selectedMapId} onChange={(e) => setSelectedMapId(e.target.value)} className={inputClass}>
-                {maps.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                {maps.map((m) => <option key={m.id} value={m.id}>{m.name} ({m.spots.length})</option>)}
               </select>
             </div>
             {/* Search */}
@@ -1934,6 +2049,77 @@ export default function IntelMap() {
                     )}
                   </div>
                 )}
+
+                {/* ── Activity feed panel */}
+                <div className="pointer-events-auto w-[240px]">
+                  {feedOpen ? (
+                    <div className="rounded-2xl border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.96),rgba(8,20,12,0.94))] shadow-[0_12px_30px_rgba(0,0,0,0.45)] backdrop-blur-xl overflow-hidden"
+                      style={{ animation: 'fadeSlideDown 0.2s ease' }}>
+                      <style>{`@keyframes fadeSlideDown { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:translateY(0); } }`}</style>
+                      {/* Feed header */}
+                      <div className="flex items-center justify-between px-3 py-2 border-b border-emerald-400/10">
+                        <span className="text-[11px] uppercase tracking-[0.24em] text-zinc-400 font-medium">Recent Changes</span>
+                        <div className="flex items-center gap-2">
+                          <button onClick={loadFeed} disabled={feedLoading}
+                            className="text-zinc-600 hover:text-zinc-300 transition text-xs" title="Refresh">
+                            {feedLoading ? '…' : '↻'}
+                          </button>
+                          <button onClick={closeFeed}
+                            className="text-zinc-600 hover:text-zinc-300 transition text-xs">✕</button>
+                        </div>
+                      </div>
+                      {/* Feed items */}
+                      <div className="max-h-[40vh] overflow-y-auto">
+                        {feedLoading && feedItems.length === 0 ? (
+                          <div className="px-3 py-4 text-xs text-zinc-600">Loading...</div>
+                        ) : feedItems.length === 0 ? (
+                          <div className="px-3 py-4 text-xs text-zinc-600">No changes recorded yet.</div>
+                        ) : (
+                          feedItems.map((item, i) => {
+                            const isNew = item.changed_at > feedLastSeen && feedLastSeen !== ''
+                            const spotName = item.snapshot?.title ?? `Spot #${item.spot_id}`
+                            const mapName  = item.snapshot?.map_id ?? ''
+                            const date     = new Date(item.changed_at)
+                            const now      = Date.now()
+                            const diffMs   = now - date.getTime()
+                            const diffMins = Math.floor(diffMs / 60000)
+                            const diffHrs  = Math.floor(diffMins / 60)
+                            const timeStr  = diffMins < 1   ? 'just now'
+                              : diffMins < 60  ? `${diffMins}m ago`
+                              : diffHrs  < 24  ? `${diffHrs}h ago`
+                              : date.toLocaleDateString()
+                            return (
+                              <div key={item.id}
+                                className={`flex gap-2 px-3 py-2.5 border-b border-emerald-400/6 last:border-0 transition ${isNew ? 'bg-emerald-500/8' : ''}`}>
+                                {isNew && <span className="mt-1.5 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-emerald-400" />}
+                                {!isNew && <span className="mt-1.5 h-1.5 w-1.5 flex-shrink-0" />}
+                                <div className="min-w-0 flex-1">
+                                  <div className="text-[11px] text-zinc-300 leading-4">
+                                    <span className="font-medium text-emerald-300">{item.changed_by_name || 'Someone'}</span>
+                                    {' edited '}
+                                    <span className="font-medium text-white">{spotName}</span>
+                                    {mapName && <span className="text-zinc-500"> · {mapName}</span>}
+                                  </div>
+                                  <div className="mt-0.5 text-[10px] text-zinc-600">{timeStr}</div>
+                                </div>
+                              </div>
+                            )
+                          })
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    /* Collapsed tab */
+                    <button onClick={openFeed}
+                      className="relative flex items-center gap-2 rounded-2xl border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.94),rgba(8,20,12,0.92))] px-3 py-2 text-xs text-zinc-400 shadow-[0_12px_30px_rgba(0,0,0,0.35)] backdrop-blur-xl transition hover:text-white hover:border-emerald-300/25">
+                      <span>📋</span>
+                      <span className="uppercase tracking-[0.2em] text-[10px]">Activity</span>
+                      {feedHasNew && (
+                        <span className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full bg-emerald-400 ring-2 ring-black" />
+                      )}
+                    </button>
+                  )}
+                </div>
               </div>
 
               {/* Map content — BOTH width and height are set in JS so the container always
@@ -2134,8 +2320,8 @@ export default function IntelMap() {
             </div>
           </div>
 
-          {/* ── Right panel — always shows spot list; selected spot expands inline */}
-          <div className="xl:sticky xl:self-start" style={{ top: `${panelTop}px` }}>
+          {/* ── Right panel — spot list */}
+          <div className="xl:sticky xl:self-start xl:w-[360px] 2xl:w-[380px]" style={{ top: `${panelTop}px` }}>
             <div className={`${panelClass} p-4 md:p-5`}>
 
               {/* Header */}
@@ -2207,8 +2393,7 @@ export default function IntelMap() {
                       <label className="mb-1.5 block text-[10px] uppercase tracking-[0.24em] text-zinc-500">Patch Version</label>
                       <input value={newSpot.patchVersion}
                         onChange={(e) => setNewSpot((p) => ({ ...p, patchVersion: e.target.value }))}
-                        placeholder="e.g. 14.3 or U14"
-                        className={tinyInputClass + ' w-full'} />
+                        placeholder="e.g. 14.3 or U14" className={tinyInputClass + ' w-full'} />
                     </div>
                   </div>
                   <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3">
@@ -2239,8 +2424,8 @@ export default function IntelMap() {
                 </div>
               )}
 
-              {/* ── INLINE SPOT LIST */}
-              <div ref={spotListRef} className="max-h-[72vh] space-y-2 overflow-y-auto pr-0.5">
+              {/* ── Spot list */}
+              <div ref={spotListRef} className="space-y-3 overflow-y-auto max-h-[72vh]">
                 {sortedSpots.length === 0 && !showAddSpot && (
                   <div className="rounded-[22px] border border-dashed border-emerald-400/8 bg-emerald-950/18 p-4 text-sm text-zinc-500">
                     No spots match the current filters.
@@ -2248,420 +2433,71 @@ export default function IntelMap() {
                 )}
                 {sortedSpots.map((spot) => {
                   const isSelected  = selectedSpot?.id === spot.id
-                  const isEditing   = editingSpotId === spot.id
                   const sd          = getSideClasses(spot.side)
                   const primaryRole = spot.roles?.[0] || spot.role || 'MG'
-                  const listSize    = Math.max(12, getRenderedSpotSize(spot))
+                  const listSize    = Math.max(8, getRenderedSpotSize(spot))
 
                   return (
-                    <div key={spot.id}
+                    <div
+                      key={spot.id}
                       ref={(el) => { if (el) spotItemRefs.current.set(spot.id, el); else spotItemRefs.current.delete(spot.id) }}
-                      className={`rounded-[22px] border transition-all duration-200 ${
-                        isSelected
-                          ? 'border-emerald-300/40 bg-emerald-500/12 shadow-[0_0_0_1px_rgba(52,211,153,0.15)]'
-                          : 'border-emerald-400/8 bg-emerald-950/18 hover:bg-emerald-900/25'
-                      } ${spot.pending ? 'opacity-75' : ''}`}>
-
-                      {/* Row */}
-                      <button className="w-full p-3 text-left"
-                        onClick={() => isSelected ? setSelectedSpot(null) : selectSpot(spot)}>
-                        <div className="flex items-center gap-2">
-                          <span className="inline-flex h-8 w-8 flex-shrink-0 items-center justify-center">
-                            <ShapeMarker shape={getRoleShape(primaryRole)}
+                      className={`group rounded-[18px] border cursor-pointer transition-all duration-300 ${
+                        isSelected && isDrawerOpen
+                          ? 'border-emerald-300/40 bg-[linear-gradient(180deg,rgba(25,78,48,0.34),rgba(11,33,19,0.92))] shadow-[0_0_0_1px_rgba(52,211,153,0.16),0_14px_26px_rgba(0,0,0,0.18)]'
+                          : 'border-emerald-400/8 bg-[linear-gradient(180deg,rgba(10,41,24,0.62),rgba(8,24,14,0.88))] hover:border-emerald-300/15 hover:bg-[linear-gradient(180deg,rgba(16,56,33,0.76),rgba(9,28,16,0.94))]'
+                      } ${spot.pending ? 'opacity-75' : ''}`}
+                      onClick={() => {
+                        if (isSelected && isDrawerOpen) {
+                          setSelectedSpot(null)
+                          setIsDrawerOpen(false)
+                          const url = new URL(window.location.href)
+                          url.searchParams.delete('spot')
+                          window.history.replaceState(null, '', url.toString())
+                        } else {
+                          selectSpot(spot)
+                        }
+                      }}
+                    >
+                      <div className="flex items-start gap-3.5 p-4">
+                        <div className="relative mt-0.5 flex-shrink-0">
+                          <span className={`absolute inset-0 rounded-2xl blur-md opacity-40 ${spot.pending ? 'bg-emerald-400/60' : sd.glow}`} />
+                          <span className="relative inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-white/8 bg-black/18 shadow-inner">
+                            <ShapeMarker
+                              shape={getRoleShape(primaryRole)}
                               sideClass={spot.pending ? 'bg-emerald-500/90' : sd.marker}
                               borderClass={spot.pending ? 'border-emerald-200' : sd.border}
-                              icon={getRoleIcon(primaryRole)} size={listSize}
-                              isActive={isSelected} />
+                              icon={getRoleIcon(primaryRole)}
+                              size={Math.max(16, listSize + 2)}
+                              isActive={isSelected && isDrawerOpen}
+                            />
                           </span>
-                          <span className={`font-medium ${isSelected ? 'text-white' : 'text-zinc-200'}`}>{spot.title}</span>
-                          {spot.requiresBuildable && <span className="rounded-full bg-amber-900/50 px-2 py-0.5 text-[10px] text-amber-300">Buildable</span>}
-                          {spot.verified && <span className="rounded-full bg-emerald-900/50 px-2 py-0.5 text-[10px] text-emerald-300">✓</span>}
-                          {spot.pending && <span className="rounded-full border border-emerald-300/20 bg-emerald-950/70 px-2 py-0.5 text-[10px] text-emerald-100">Saving</span>}
-                          <span className={`ml-auto flex-shrink-0 text-zinc-600 text-xs transition-transform duration-200 ${isSelected ? 'rotate-180' : ''}`}>▼</span>
                         </div>
-                        <div className="mt-1.5 flex flex-wrap gap-1.5 text-[11px] uppercase tracking-[0.18em] text-zinc-500">
-                          <span>{spot.roles.join(', ')}</span>
-                          <span>·</span><span>{spot.side}</span>
-                          {spot.cones?.Axis   && <><span>·</span><span>Axis Cone</span></>}
-                          {spot.cones?.Allies && <><span>·</span><span>Allies Cone</span></>}
-                          {spot.fireLines?.Axis   && <><span>·</span><span>Axis Snipe</span></>}
-                          {spot.fireLines?.Allies && <><span>·</span><span>Allies Snipe</span></>}
-                          {(spot.routes || []).length > 0 && <><span>·</span><span>{spot.routes!.length} Route{spot.routes!.length !== 1 ? 's' : ''}</span></>}
-                        </div>
-                      </button>
-
-                      {/* Expanded */}
-                      {isSelected && (
-                        <div className="border-t border-emerald-300/10 px-3 pb-3 pt-3">
-                          {isEditing ? (
-                            <div className="space-y-3">
-                              <input value={editSpot.title} onChange={(e) => setEditSpot((p) => ({ ...p, title: e.target.value }))}
-                                placeholder="Spot title" className={inputClass} />
-                              <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3">
-                                <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">Roles</label>
-                                <div className="grid grid-cols-2 gap-2">
-                                  {roleNames.map((role) => {
-                                    const checked = editSpot.roles.includes(role)
-                                    return (
-                                      <label key={role} className={`flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2 text-sm transition ${checked ? 'border-emerald-300/35 bg-emerald-600/20 text-white' : 'border-emerald-300/10 bg-emerald-950/20 text-zinc-300 hover:bg-emerald-900/30'}`}>
-                                        <input type="checkbox" checked={checked} className="accent-emerald-500"
-                                          onChange={() => setEditSpot((p) => ({ ...p, roles: toggleRole(p.roles, role) }))} />
-                                        <span>{role}</span>
-                                      </label>
-                                    )
-                                  })}
-                                </div>
-                              </div>
-                              <select value={editSpot.side} onChange={(e) => {
-                                const nextSide = e.target.value as SpotSide
-                                setEditSpot((p) => ({ ...p, side: nextSide }))
-                                setEditingConeSide(nextSide === 'Allies' ? 'Allies' : 'Axis')
-                              }} className={inputClass}>
-                                <option value="Axis">Axis</option><option value="Allies">Allies</option><option value="Both">Both</option>
-                              </select>
-                              <div className="flex items-center gap-2 rounded-2xl border border-emerald-400/10 bg-emerald-950/25 px-3 py-2">
-                                <label className="text-[11px] uppercase tracking-[0.28em] text-zinc-400 whitespace-nowrap">Size</label>
-                                <input type="range" min="2" max="20" value={clampSpotSize(editSpot.size)}
-                                  onChange={(e) => updateEditSpotSize(Number(e.target.value))} className="w-full accent-emerald-500" />
-                                <span className="w-6 text-xs text-zinc-300">{clampSpotSize(editSpot.size)}</span>
-                                <span className="text-[9px] text-emerald-600 whitespace-nowrap">👥 everyone</span>
-                              </div>
-                              {(canUseCone || canUseLine) && (
-                                <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3">
-                                  <div className="mb-3 flex flex-wrap gap-2">
-                                    {availableConeSides.map((s) => (
-                                      <button key={s} onClick={() => setEditingConeSide(s)}
-                                        className={`rounded-2xl px-3 py-2 text-sm font-medium transition ${editingConeSide === s ? s === 'Axis' ? 'border border-red-300/30 bg-red-600/80 text-white' : 'border border-blue-300/30 bg-blue-600/80 text-white' : 'border border-emerald-300/15 bg-emerald-900/35 text-emerald-50 hover:bg-emerald-800/55'}`}>{s}</button>
-                                    ))}
-                                    {canUseCone && <button onClick={() => setToolMode('cone')} className={`rounded-2xl px-3 py-2 text-sm font-medium transition ${toolMode === 'cone' ? 'border border-emerald-300/30 bg-emerald-600/80 text-white' : 'border border-emerald-300/15 bg-emerald-900/35 text-emerald-50 hover:bg-emerald-800/55'}`}>Cone</button>}
-                                    {canUseLine && <button onClick={() => setToolMode('line')} className={`rounded-2xl px-3 py-2 text-sm font-medium transition ${toolMode === 'line' ? 'border border-emerald-300/30 bg-emerald-600/80 text-white' : 'border border-emerald-300/15 bg-emerald-900/35 text-emerald-50 hover:bg-emerald-800/55'}`}>Snipe Line</button>}
-                                  </div>
-                                  <div className="flex flex-wrap gap-2">
-                                    {toolMode === 'cone' && canUseCone && (<>
-                                      <button onClick={beginConePlacement} className={softButtonClass}>{placementMode ? `Placing ${editingConeSide}...` : `Mark ${editingConeSide} Cone`}</button>
-                                      <button onClick={clearCone} className={softButtonClass}>Clear {editingConeSide}</button>
-                                    </>)}
-                                    {toolMode === 'line' && canUseLine && (<>
-                                      <div className="w-full mb-2">
-                                        <label className="mb-1 block text-[10px] uppercase tracking-[0.24em] text-zinc-500">Midpoint</label>
-                                        <select value={snipeLineMidpoint} onChange={(e) => setSnipeLineMidpoint(e.target.value)} className={tinyInputClass + ' w-full'}>
-                                          <option value="Any">Any (always visible)</option>
-                                          {(selectedMap?.midpoints || []).map((mp) => <option key={mp} value={mp}>{mp}</option>)}
-                                        </select>
-                                      </div>
-                                      <button onClick={beginLinePlacement} className={softButtonClass}>{placementMode === 'line_end' ? `Placing ${editingConeSide}...` : `Mark ${editingConeSide} Snipe`}</button>
-                                      <button onClick={clearLine} className={softButtonClass}>Clear {editingConeSide}</button>
-                                    </>)}
-                                  </div>
-                                  <div className="mt-2 text-xs text-zinc-500">
-                                    {toolMode === 'cone' && !placementMode && (currentEditingCone ? `${editingConeSide} cone — ${Math.round(currentEditingCone.length * 20)}m, ${Math.round(currentEditingCone.spread)}° spread` : `No ${editingConeSide} cone yet.`)}
-                                    {toolMode === 'cone' && placementMode === 'cone_first' && `Click 1st edge of ${editingConeSide} cone.`}
-                                    {toolMode === 'cone' && placementMode === 'cone_second' && `Preview, then click 2nd edge.`}
-                                    {toolMode === 'line' && !placementMode && (currentEditingLine ? `${editingConeSide} snipe — ${selectedSpot ? getDistanceMeters(selectedSpot.x, selectedSpot.y, currentEditingLine.endX, currentEditingLine.endY) : 0}m / max ${getMaxRangeMeters(primaryEditRole, editingConeSide)}m` : `No ${editingConeSide} snipe yet.`)}
-                                    {toolMode === 'line' && placementMode === 'line_end' && `Move to preview, click impact.`}
-                                  </div>
-                                </div>
-                              )}
-                              {canUseRoute && (
-                                <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3">
-                                  <label className="mb-3 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">Routes</label>
-                                  <div className="mb-3 flex gap-2">
-                                    {(['Axis', 'Allies'] as ConeSide[]).map((s) => (
-                                      <button key={s} onClick={() => setNewRouteConfig((p) => ({ ...p, side: s }))}
-                                        className={`rounded-xl px-3 py-1.5 text-sm font-medium transition ${newRouteConfig.side === s ? s === 'Axis' ? 'border border-red-300/30 bg-red-600/80 text-white' : 'border border-blue-300/30 bg-blue-600/80 text-white' : 'border border-emerald-300/15 bg-emerald-900/35 text-emerald-50 hover:bg-emerald-800/55'}`}>{s}</button>
-                                    ))}
-                                  </div>
-                                  <div className="mb-3">
-                                    <label className="mb-1.5 block text-[10px] uppercase tracking-[0.24em] text-zinc-500">Midpoint</label>
-                                    <select value={newRouteConfig.midpoint} onChange={(e) => setNewRouteConfig((p) => ({ ...p, midpoint: e.target.value }))} className={tinyInputClass + ' w-full'}>
-                                      <option value="Any">Any Midpoint</option>
-                                      {(selectedMap?.midpoints || []).map((mp) => <option key={mp} value={mp}>{mp}</option>)}
-                                    </select>
-                                  </div>
-                                  <div className="mb-3">
-                                    <label className="mb-1.5 block text-[10px] uppercase tracking-[0.24em] text-zinc-500">Color</label>
-                                    <div className="flex flex-wrap gap-2">
-                                      {ROUTE_COLORS.map((c) => (
-                                        <button key={c.value} onClick={() => setNewRouteConfig((p) => ({ ...p, color: c.value }))} title={c.name}
-                                          className={`h-6 w-6 rounded-full border-2 transition ${newRouteConfig.color === c.value ? 'border-white scale-125' : 'border-transparent hover:border-white/50'}`}
-                                          style={{ backgroundColor: c.value }} />
-                                      ))}
-                                    </div>
-                                  </div>
-                                  <div className="mb-3">
-                                    <label className="mb-1.5 block text-[10px] uppercase tracking-[0.24em] text-zinc-500">Label</label>
-                                    <select value={newRouteConfig.label} onChange={(e) => setNewRouteConfig((p) => ({ ...p, label: e.target.value }))} className={tinyInputClass + ' w-full'}>
-                                      {ROUTE_LABELS.map((l) => <option key={l} value={l}>{l}</option>)}
-                                    </select>
-                                  </div>
-                                  <div className="mb-3">
-                                    <label className="mb-1.5 block text-[10px] uppercase tracking-[0.24em] text-zinc-500">Width — {newRouteConfig.strokeWidth}px</label>
-                                    <input type="range" min="2" max="8" value={newRouteConfig.strokeWidth}
-                                      onChange={(e) => setNewRouteConfig((p) => ({ ...p, strokeWidth: Number(e.target.value) }))} className="w-full accent-emerald-500" />
-                                  </div>
-                                  <div className="mb-3">
-                                    <label className="mb-1.5 block text-[10px] uppercase tracking-[0.24em] text-zinc-500">Route Video</label>
-                                    <input value={newRouteConfig.youtube} onChange={(e) => setNewRouteConfig((p) => ({ ...p, youtube: e.target.value }))} placeholder="YouTube link" className={tinyInputClass + ' w-full'} />
-                                  </div>
-                                  <button onClick={() => setRouteDrawMode((p) => !p)} className={`w-full ${routeDrawMode ? buttonClass : softButtonClass}`}>
-                                    {routeDrawMode ? 'Drawing — hold mouse on map' : 'Draw Route'}
-                                  </button>
-                                  {routeDrawMode && <p className="mt-1.5 text-xs text-zinc-500">Hold mouse down and drag. Release to finish.</p>}
-                                  {editSpot.routes.length > 0 && (
-                                    <div className="mt-3 space-y-2">
-                                      <label className="block text-[10px] uppercase tracking-[0.24em] text-zinc-500">Saved ({editSpot.routes.length})</label>
-                                      {editSpot.routes.map((r) => (
-                                        <div key={r.id} className="flex items-center gap-2 rounded-xl border border-emerald-400/10 bg-emerald-950/25 px-3 py-2">
-                                          <span className="h-3 w-3 flex-shrink-0 rounded-full" style={{ backgroundColor: r.color }} />
-                                          <span className="flex-1 text-xs text-zinc-300"><span className="font-medium text-white">{r.label}</span>{` · `}{r.side}{` · `}{r.midpoint}{` · `}{getRouteTotalDistance(r)}m</span>
-                                          <button onClick={() => deleteRoute(r.id)} className="text-xs text-red-400 hover:text-red-300">✕</button>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-                              <textarea value={editSpot.notes} onChange={(e) => setEditSpot((p) => ({ ...p, notes: e.target.value }))} placeholder="Notes" rows={2} className={inputClass} />
-                              <input value={editSpot.youtube} onChange={(e) => setEditSpot((p) => ({ ...p, youtube: e.target.value }))} placeholder="YouTube link" className={inputClass} />
-                              <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-emerald-400/10 bg-emerald-950/25 px-4 py-3 hover:bg-emerald-900/30">
-                                <input type="checkbox" checked={editSpot.requiresBuildable} className="accent-emerald-500 h-4 w-4"
-                                  onChange={(e) => setEditSpot((p) => ({ ...p, requiresBuildable: e.target.checked }))} />
-                                <div><div className="text-sm font-medium text-white">Requires Buildable</div><div className="text-xs text-zinc-500">Spot needs a buildable</div></div>
-                              </label>
-
-                              {/* Verified / patch status */}
-                              <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3 space-y-3">
-                                <label className="flex cursor-pointer items-center gap-3">
-                                  <input type="checkbox" checked={editSpot.verified} className="accent-emerald-500 h-4 w-4"
-                                    onChange={(e) => setEditSpot((p) => ({ ...p, verified: e.target.checked }))} />
-                                  <div>
-                                    <div className="text-sm font-medium text-white">Verified</div>
-                                    <div className="text-xs text-zinc-500">Spot has been tested and works in current patch</div>
-                                  </div>
-                                </label>
-                                <div>
-                                  <label className="mb-1.5 block text-[10px] uppercase tracking-[0.24em] text-zinc-500">Patch Version</label>
-                                  <input value={editSpot.patchVersion}
-                                    onChange={(e) => setEditSpot((p) => ({ ...p, patchVersion: e.target.value }))}
-                                    placeholder="e.g. 14.3 or U14"
-                                    className={tinyInputClass + ' w-full'} />
-                                </div>
-                              </div>
-                              <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3">
-                                <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">Photos ({editSpot.images.length + editSpotNewPreviews.length}/5)</label>
-                                {editSpot.images.length > 0 && (
-                                  <div className="mb-3 grid grid-cols-3 gap-2">
-                                    {editSpot.images.map((img, idx) => (
-                                      <div key={idx} className="relative">
-                                        <img src={img} alt="" className="h-20 w-full rounded-xl border border-zinc-800 object-cover" />
-                                        <button onClick={() => setEditSpot((p) => ({ ...p, images: p.images.filter((_, i) => i !== idx) }))} className="absolute right-1 top-1 rounded-full bg-black/80 px-2 py-0.5 text-xs text-white hover:bg-red-900/90">✕</button>
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                                {editSpotNewPreviews.length > 0 && (
-                                  <div className="mb-3 grid grid-cols-3 gap-2">
-                                    {editSpotNewPreviews.map((url, idx) => (
-                                      <div key={idx} className="relative">
-                                        <img src={url} alt="" className="h-20 w-full rounded-xl border border-emerald-600/40 object-cover" />
-                                        <span className="absolute left-1 top-1 rounded-full bg-emerald-700/90 px-1.5 py-0.5 text-[10px] text-white">New</span>
-                                        <button onClick={() => { URL.revokeObjectURL(editSpotNewPreviews[idx]); setEditSpotNewPreviews((p) => p.filter((_, i) => i !== idx)); setEditSpotNewFiles((p) => p.filter((_, i) => i !== idx)) }} className="absolute right-1 top-1 rounded-full bg-black/80 px-2 py-0.5 text-xs text-white hover:bg-red-900/90">✕</button>
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                                {editSpot.images.length + editSpotNewPreviews.length < 5 && (
-                                  <>
-                                    <input ref={editFileInputRef} type="file" accept="image/*" multiple
-                                      onChange={(e) => {
-                                        const files = Array.from(e.target.files || [])
-                                        const slots = 5 - editSpot.images.length - editSpotNewPreviews.length
-                                        const limited = files.slice(0, slots); if (!limited.length) return
-                                        const previews = limited.map((f) => URL.createObjectURL(f))
-                                        setEditSpotNewFiles((p) => [...p, ...limited]); setEditSpotNewPreviews((p) => [...p, ...previews])
-                                        if (editFileInputRef.current) editFileInputRef.current.value = ''
-                                      }} className="text-sm text-zinc-400 file:mr-3 file:rounded-xl file:border-0 file:bg-emerald-900/60 file:px-3 file:py-2 file:text-sm file:text-white hover:file:bg-emerald-800" />
-                                    <p className="mt-1.5 text-xs text-zinc-600">{5 - editSpot.images.length - editSpotNewPreviews.length} slot{5 - editSpot.images.length - editSpotNewPreviews.length !== 1 ? 's' : ''} remaining</p>
-                                  </>
-                                )}
-                              </div>
-                              <div className="flex gap-2">
-                                <button onClick={saveEditedSpot} className={buttonClass}>Save Changes</button>
-                                <button onClick={cancelEditSpot} className={softButtonClass}>Cancel</button>
-                              </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-start gap-2">
+                            <div className={`truncate text-sm font-semibold leading-tight ${isSelected && isDrawerOpen ? 'text-white' : 'text-zinc-200 group-hover:text-white'}`}>
+                              {spot.title || 'Untitled Spot'}
                             </div>
-                          ) : (
-                            <div className="space-y-3">
-                              {selectedSpot.images && selectedSpot.images.length > 0 && (
-                                <>
-                                  <img src={selectedSpot.images[0]} alt={selectedSpot.title}
-                                    className="h-40 w-full cursor-pointer rounded-[20px] border border-zinc-800 object-cover"
-                                    onClick={() => setLightboxImage(selectedSpot.images![0])} />
-                                  {selectedSpot.images.length > 1 && (
-                                    <div className="grid grid-cols-4 gap-1.5">
-                                      {selectedSpot.images.slice(1).map((img, idx) => (
-                                        <img key={idx} src={img} alt="" className="h-14 w-full cursor-pointer rounded-xl border border-zinc-800 object-cover" onClick={() => setLightboxImage(img)} />
-                                      ))}
-                                    </div>
-                                  )}
-                                </>
-                              )}
-                              <div className="flex flex-wrap gap-1.5 text-xs uppercase tracking-[0.18em]">
-                                {selectedSpot.roles.map((r) => <span key={r} className={`rounded-full px-2.5 py-0.5 text-white ${getRoleColor(r)}`}>{r}</span>)}
-                                <span className={`rounded-full px-2.5 py-0.5 ${getSideClasses(selectedSpot.side).badge}`}>{selectedSpot.side}</span>
-                                {selectedSpot.requiresBuildable && <span className="rounded-full border border-amber-400/30 bg-amber-900/40 px-2.5 py-0.5 text-amber-200">Buildable</span>}
-                                {selectedSpot.verified
-                                  ? <span className="rounded-full border border-emerald-400/40 bg-emerald-800/50 px-2.5 py-0.5 text-emerald-200">✓ Verified{selectedSpot.patchVersion ? ` · ${selectedSpot.patchVersion}` : ''}</span>
-                                  : <span className="rounded-full border border-zinc-600/40 bg-zinc-800/50 px-2.5 py-0.5 text-zinc-400">Unverified</span>
-                                }
-                                {selectedSpot.cones?.Axis    && <span className="rounded-full border border-red-300/15 bg-red-900/35 px-2.5 py-0.5 text-white">Axis Cone</span>}
-                                {selectedSpot.cones?.Allies  && <span className="rounded-full border border-blue-300/15 bg-blue-900/35 px-2.5 py-0.5 text-white">Allies Cone</span>}
-                                {selectedSpot.fireLines?.Axis   && <span className="rounded-full border border-red-300/15 bg-red-900/35 px-2.5 py-0.5 text-white">Axis Snipe</span>}
-                                {selectedSpot.fireLines?.Allies && <span className="rounded-full border border-blue-300/15 bg-blue-900/35 px-2.5 py-0.5 text-white">Allies Snipe</span>}
-                                {selectedSpot.pending && <span className="rounded-full border border-emerald-300/20 bg-emerald-950/70 px-2.5 py-0.5 text-emerald-100">Saving...</span>}
-                              </div>
-
-                              {/* Author / edit info */}
-                              <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-zinc-500">
-                                {selectedSpot.createdByName && (
-                                  <span>Added by <span className="text-zinc-300">{selectedSpot.createdByName}</span>
-                                    {selectedSpot.created_at && <span className="ml-1 text-zinc-600">· {new Date(selectedSpot.created_at).toLocaleDateString()}</span>}
-                                  </span>
-                                )}
-                                {selectedSpot.lastEditedByName && (
-                                  <span>Edited by <span className="text-zinc-300">{selectedSpot.lastEditedByName}</span>
-                                    {selectedSpot.lastEditedAt && <span className="ml-1 text-zinc-600">· {new Date(selectedSpot.lastEditedAt).toLocaleDateString()}</span>}
-                                  </span>
-                                )}
-                              </div>
-                              {selectedSpot.notes && <p className="text-sm leading-6 text-zinc-300">{selectedSpot.notes}</p>}
-                              {/* Local size override — only visible to you */}
-                              {!selectedSpot.pending && (
-                                <div className="flex items-center gap-2 rounded-2xl border border-zinc-700/40 bg-zinc-900/40 px-3 py-2">
-                                  <label className="text-[11px] uppercase tracking-[0.28em] text-zinc-500 whitespace-nowrap">Size</label>
-                                  <input type="range" min="-8" max="12" step="1"
-                                    value={localSpotSizes[selectedSpot.id] ?? 0}
-                                    onChange={(e) => {
-                                      const v = Number(e.target.value)
-                                      const next = { ...localSpotSizes, [selectedSpot.id]: v }
-                                      setLocalSpotSizes(next)
-                                      localStorage.setItem('hll_spot_sizes', JSON.stringify(next))
-                                    }}
-                                    className="w-full accent-zinc-500" />
-                                  <span className="w-4 text-xs text-zinc-500">{(localSpotSizes[selectedSpot.id] ?? 0) > 0 ? '+' : ''}{localSpotSizes[selectedSpot.id] ?? 0}</span>
-                                  <span className="text-[9px] text-zinc-600 whitespace-nowrap">👁 only you</span>
-                                </div>
-                              )}
-                              {(selectedSpot.cones?.Axis || selectedSpot.cones?.Allies) && (
-                                <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3">
-                                  <div className="mb-2 text-xs font-medium uppercase tracking-[0.2em] text-zinc-400">LOS Cones</div>
-                                  {selectedSpot.cones?.Axis && <div className="grid grid-cols-3 gap-1 text-xs text-red-300"><div>Dir <span className="text-white">{Math.round(selectedSpot.cones.Axis.angle)}°</span></div><div>Spread <span className="text-white">{Math.round(selectedSpot.cones.Axis.spread)}°</span></div><div>Range <span className="text-white">{Math.round(selectedSpot.cones.Axis.length * 20)}m</span></div></div>}
-                                  {selectedSpot.cones?.Allies && <div className="mt-1.5 grid grid-cols-3 gap-1 text-xs text-blue-300"><div>Dir <span className="text-white">{Math.round(selectedSpot.cones.Allies.angle)}°</span></div><div>Spread <span className="text-white">{Math.round(selectedSpot.cones.Allies.spread)}°</span></div><div>Range <span className="text-white">{Math.round(selectedSpot.cones.Allies.length * 20)}m</span></div></div>}
-                                </div>
-                              )}
-                              {(selectedSpot.fireLines?.Axis || selectedSpot.fireLines?.Allies) && (
-                                <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3">
-                                  <div className="mb-2 text-xs font-medium uppercase tracking-[0.2em] text-zinc-400">Snipe Lines</div>
-                                  {selectedSpot.fireLines?.Axis && (() => { const l = selectedSpot.fireLines!.Axis!; const dm = getDistanceMeters(selectedSpot.x, selectedSpot.y, l.endX, l.endY); const maxM = getMaxRangeMeters(selectedSpot.roles?.[0] || selectedSpot.role || 'MG', 'Axis'); return <div className="grid grid-cols-3 gap-1 text-xs text-red-300"><div>Axis <span className="text-white">{dm}m</span></div><div>Max <span className="text-white">{maxM}m</span>{dm > maxM && <span className="ml-1 text-yellow-400">OUT</span>}</div><div className="text-zinc-500">{l.midpoint !== 'Any' ? l.midpoint : 'Any'}</div></div> })()}
-                                  {selectedSpot.fireLines?.Allies && (() => { const l = selectedSpot.fireLines!.Allies!; const dm = getDistanceMeters(selectedSpot.x, selectedSpot.y, l.endX, l.endY); const maxM = getMaxRangeMeters(selectedSpot.roles?.[0] || selectedSpot.role || 'MG', 'Allies'); return <div className="mt-1.5 grid grid-cols-3 gap-1 text-xs text-blue-300"><div>Allies <span className="text-white">{dm}m</span></div><div>Max <span className="text-white">{maxM}m</span>{dm > maxM && <span className="ml-1 text-yellow-400">OUT</span>}</div><div className="text-zinc-500">{l.midpoint !== 'Any' ? l.midpoint : 'Any'}</div></div> })()}
-                                </div>
-                              )}
-                              {(selectedSpot.routes || []).length > 0 && (
-                                <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3">
-                                  <div className="mb-2 text-xs font-medium uppercase tracking-[0.2em] text-zinc-400">Routes</div>
-                                  <div className="space-y-1.5">
-                                    {(selectedSpot.routes || []).map((route) => {
-                                      const isSel = selectedRouteId === route.id
-                                      return (
-                                        <button key={route.id} onClick={() => setSelectedRouteId(isSel ? null : route.id)}
-                                          className={`w-full rounded-xl border p-2 text-left transition ${isSel ? 'border-emerald-300/30 bg-emerald-600/15' : 'border-emerald-400/8 bg-emerald-950/20 hover:bg-emerald-900/30'}`}>
-                                          <div className="flex items-center gap-2">
-                                            <span className="h-3 w-3 flex-shrink-0 rounded-full" style={{ backgroundColor: route.color }} />
-                                            <span className="text-sm font-medium text-white">{route.label}</span>
-                                            <span className={`ml-auto rounded-full px-2 py-0.5 text-[10px] ${route.side === 'Axis' ? 'bg-red-700/70 text-red-100' : 'bg-blue-700/70 text-blue-100'}`}>{route.side}</span>
-                                          </div>
-                                          <div className="mt-0.5 flex gap-3 text-[11px] text-zinc-500">
-                                            <span>{route.midpoint}</span><span>{getRouteTotalDistance(route)}m</span>{route.youtube && <span className="text-emerald-400">▶</span>}
-                                          </div>
-                                        </button>
-                                      )
-                                    })}
-                                  </div>
-                                  {selectedRoute && selectedRouteEmbed && (
-                                    <div className="mt-3 overflow-hidden rounded-[18px] border border-zinc-800 bg-black">
-                                      <iframe className="aspect-video w-full" src={`${selectedRouteEmbed}?rel=0&modestbranding=1`} title={`${selectedRoute.label} route video`} allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowFullScreen />
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-                              {selectedSpotEmbedUrl && (
-                                <div className="overflow-hidden rounded-[20px] border border-zinc-800 bg-black">
-                                  <iframe className="aspect-video w-full" src={`${selectedSpotEmbedUrl}?rel=0&modestbranding=1`} title={`${selectedSpot.title} video`} allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowFullScreen />
-                                </div>
-                              )}
-                              {selectedSpot.youtube && !selectedSpotEmbedUrl && (
-                                <a href={selectedSpot.youtube} target="_blank" rel="noreferrer" className="inline-flex w-fit items-center rounded-2xl border border-emerald-300/15 bg-emerald-900/35 px-4 py-2 text-sm font-medium hover:bg-emerald-800/55">Open on YouTube ↗</a>
-                              )}
-                              {/* ── Comments thread */}
-                              <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3">
-                                <div className="mb-2 text-xs font-medium uppercase tracking-[0.2em] text-zinc-400">
-                                  Comments {comments.length > 0 && <span className="text-zinc-500">({comments.length})</span>}
-                                </div>
-                                {isLoadingComments ? (
-                                  <div className="py-2 text-xs text-zinc-600">Loading...</div>
-                                ) : comments.length === 0 ? (
-                                  <div className="py-1 text-xs text-zinc-600">No comments yet. Be the first.</div>
-                                ) : (
-                                  <div className="mb-3 space-y-2 max-h-48 overflow-y-auto">
-                                    {comments.map((c) => (
-                                      <div key={c.id} className="group flex gap-2">
-                                        <div className="flex-1 rounded-xl border border-emerald-400/8 bg-emerald-950/25 px-3 py-2">
-                                          <div className="flex items-center gap-2 mb-1">
-                                            <span className="text-xs font-medium text-emerald-300">{c.user_name}</span>
-                                            <span className="text-[10px] text-zinc-600">{new Date(c.created_at).toLocaleDateString()}</span>
-                                          </div>
-                                          <p className="text-sm text-zinc-300 leading-5">{c.content}</p>
-                                        </div>
-                                        {(c.user_id === userId || userRole === 'admin') && (
-                                          <button onClick={() => deleteComment(c.id)}
-                                            className="opacity-0 group-hover:opacity-100 self-start mt-1 text-zinc-600 hover:text-red-400 transition text-xs">✕</button>
-                                        )}
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                                {/* Post comment */}
-                                <div className="flex gap-2 mt-2">
-                                  <input
-                                    value={commentText}
-                                    onChange={(e) => setCommentText(e.target.value)}
-                                    onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); postComment() } }}
-                                    placeholder="Add a comment..."
-                                    className={tinyInputClass + ' flex-1'}
-                                  />
-                                  <button onClick={postComment} disabled={!commentText.trim()}
-                                    className={`rounded-xl border border-emerald-300/25 bg-emerald-600/80 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed`}>
-                                    Post
-                                  </button>
-                                </div>
-                              </div>
-
-                              {/* Keyboard hint */}
-                              <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-zinc-700">
-                                <span><kbd className="rounded bg-zinc-800 px-1 py-0.5">↑↓</kbd> navigate</span>
-                                {canEdit && <span><kbd className="rounded bg-zinc-800 px-1 py-0.5">E</kbd> edit</span>}
-                                <span><kbd className="rounded bg-zinc-800 px-1 py-0.5">Esc</kbd> close</span>
-                              </div>
-
-                              <div className="flex flex-wrap gap-2 pt-1">
-                                {canEdit && <button onClick={startEditingSpot} disabled={!!selectedSpot.pending} className={`${softButtonClass} ${selectedSpot.pending ? 'cursor-not-allowed opacity-60' : ''}`}>Edit</button>}
-                                {canEdit && <button onClick={copySelectedSpot} disabled={!!selectedSpot.pending} className={`${softButtonClass} ${selectedSpot.pending ? 'cursor-not-allowed opacity-60' : ''}`}>Copy</button>}
-                                {canDelete && <button onClick={deleteSelectedSpot} disabled={!!selectedSpot.pending} className={`inline-flex items-center rounded-2xl border border-red-700 bg-red-900/60 px-4 py-2 text-sm font-medium hover:bg-red-800/70 ${selectedSpot.pending ? 'cursor-not-allowed opacity-60' : ''}`}>Delete</button>}
-                              </div>
-                            </div>
-                          )}
+                            {spot.pending && (
+                              <span className="mt-0.5 rounded-full border border-emerald-300/20 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.18em] text-emerald-100">New</span>
+                            )}
+                          </div>
+                          <div className="mt-1.5 flex items-center gap-1.5 text-xs text-emerald-100/60">
+                            <span className="truncate">{primaryRole}</span>
+                            {(spot.roles?.length || 0) > 1 && (<><span className="text-emerald-100/30">•</span><span>+{(spot.roles?.length || 0) - 1} more</span></>)}
+                          </div>
+                          <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                            <span className={`${sd.badge} px-2 py-0.5 text-[11px] font-medium`}>{spot.side}</span>
+                            {spot.verified && <span className="rounded-full border border-emerald-300/16 bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-100/90">Verified</span>}
+                            {spot.requiresBuildable && <span className="rounded-full border border-amber-300/18 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-100/90">Buildable</span>}
+                            {(spot.cones?.Axis || spot.cones?.Allies || spot.fireLines?.Axis || spot.fireLines?.Allies || (spot.routes?.length || 0) > 0) && (
+                              <span className="rounded-full border border-white/8 bg-white/5 px-2 py-0.5 text-[11px] text-zinc-300/90">Intel</span>
+                            )}
+                          </div>
                         </div>
-                      )}
+                        <div className="pt-0.5 text-zinc-500 transition group-hover:text-emerald-100/70">
+                          <span className="text-sm">{isSelected && isDrawerOpen ? '•' : '›'}</span>
+                        </div>
+                      </div>
                     </div>
                   )
                 })}
@@ -2671,9 +2507,389 @@ export default function IntelMap() {
         </div>
       </div>
 
+      {/* ── Spot drawer — slides in from right with blur backdrop */}
+      {isDrawerOpen && selectedSpot && (
+        <div className="fixed inset-0 z-50 flex justify-end">
+          <div
+            className="absolute inset-0 bg-black/55 backdrop-blur-[2px]"
+            onClick={() => {
+              if (editingSpotId) { cancelEditSpot(); return }
+              setSelectedSpot(null)
+              setIsDrawerOpen(false)
+              const url = new URL(window.location.href)
+              url.searchParams.delete('spot')
+              window.history.replaceState(null, '', url.toString())
+            }}
+          />
+          <div className="relative h-full w-full max-w-[820px] overflow-y-auto border-l border-emerald-300/15 bg-[linear-gradient(180deg,rgba(11,28,16,0.96),rgba(7,18,11,0.98))] p-4 shadow-[0_20px_80px_rgba(0,0,0,0.55)] backdrop-blur-xl sm:p-5">
+            <style>{`@keyframes slideInDrawer { from { opacity:0; transform:translateX(18px); } to { opacity:1; transform:translateX(0); } }`}</style>
+            <div
+              className="mx-auto w-full max-w-[760px] rounded-[24px] border border-emerald-300/15 bg-emerald-950/22 p-4 sm:p-5"
+              style={{ animation: 'slideInDrawer 0.22s cubic-bezier(0.4,0,0.2,1)' }}
+            >
+              {/* Drawer header */}
+              <div className="mb-3 flex items-center justify-between">
+                <span className="truncate pr-2 text-xs font-semibold text-white sm:text-sm">
+                  {editingSpotId ? 'Editing' : selectedSpot.title}
+                </span>
+                <button onClick={() => {
+                  if (editingSpotId) { cancelEditSpot(); return }
+                  setSelectedSpot(null)
+                  setIsDrawerOpen(false)
+                  const url = new URL(window.location.href)
+                  url.searchParams.delete('spot')
+                  window.history.replaceState(null, '', url.toString())
+                }} className="flex-shrink-0 rounded-xl border border-emerald-300/15 bg-emerald-900/40 px-2 py-1 text-xs text-zinc-400 transition hover:text-white">✕</button>
+              </div>
+
+              {editingSpotId ? (
+                /* ── EDIT FORM */
+                <div className="space-y-3">
+                  <input value={editSpot.title} onChange={(e) => setEditSpot((p) => ({ ...p, title: e.target.value }))} placeholder="Spot title" className={inputClass} />
+                  <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3">
+                    <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">Roles</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      {roleNames.map((role) => {
+                        const checked = editSpot.roles.includes(role)
+                        return (
+                          <label key={role} className={`flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2 text-sm transition ${checked ? 'border-emerald-300/35 bg-emerald-600/20 text-white' : 'border-emerald-300/10 bg-emerald-950/20 text-zinc-300 hover:bg-emerald-900/30'}`}>
+                            <input type="checkbox" checked={checked} className="accent-emerald-500"
+                              onChange={() => setEditSpot((p) => ({ ...p, roles: toggleRole(p.roles, role) }))} />
+                            <span>{role}</span>
+                          </label>
+                        )
+                      })}
+                    </div>
+                  </div>
+                  <select value={editSpot.side} onChange={(e) => { const nextSide = e.target.value as SpotSide; setEditSpot((p) => ({ ...p, side: nextSide })); setEditingConeSide(nextSide === 'Allies' ? 'Allies' : 'Axis') }} className={inputClass}>
+                    <option value="Axis">Axis</option><option value="Allies">Allies</option><option value="Both">Both</option>
+                  </select>
+                  <div className="flex items-center gap-2 rounded-2xl border border-emerald-400/10 bg-emerald-950/25 px-3 py-2">
+                    <label className="text-[11px] uppercase tracking-[0.28em] text-zinc-400 whitespace-nowrap">Size</label>
+                    <input type="range" min="2" max="20" value={clampSpotSize(editSpot.size)} onChange={(e) => updateEditSpotSize(Number(e.target.value))} className="w-full accent-emerald-500" />
+                    <span className="w-6 text-xs text-zinc-300">{clampSpotSize(editSpot.size)}</span>
+                    <span className="text-[9px] text-emerald-600 whitespace-nowrap">👥 everyone</span>
+                  </div>
+                  {(canUseCone || canUseLine) && (
+                    <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3">
+                      <div className="mb-3 flex flex-wrap gap-2">
+                        {availableConeSides.map((s) => (
+                          <button key={s} onClick={() => setEditingConeSide(s)}
+                            className={`rounded-2xl px-3 py-2 text-sm font-medium transition ${editingConeSide === s ? s === 'Axis' ? 'border border-red-300/30 bg-red-600/80 text-white' : 'border border-blue-300/30 bg-blue-600/80 text-white' : 'border border-emerald-300/15 bg-emerald-900/35 text-emerald-50 hover:bg-emerald-800/55'}`}>{s}</button>
+                        ))}
+                        {canUseCone && <button onClick={() => setToolMode('cone')} className={`rounded-2xl px-3 py-2 text-sm font-medium transition ${toolMode === 'cone' ? 'border border-emerald-300/30 bg-emerald-600/80 text-white' : 'border border-emerald-300/15 bg-emerald-900/35 text-emerald-50 hover:bg-emerald-800/55'}`}>Cone</button>}
+                        {canUseLine && <button onClick={() => setToolMode('line')} className={`rounded-2xl px-3 py-2 text-sm font-medium transition ${toolMode === 'line' ? 'border border-emerald-300/30 bg-emerald-600/80 text-white' : 'border border-emerald-300/15 bg-emerald-900/35 text-emerald-50 hover:bg-emerald-800/55'}`}>Snipe Line</button>}
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {toolMode === 'cone' && canUseCone && (<>
+                          <button onClick={beginConePlacement} className={softButtonClass}>{placementMode ? `Placing ${editingConeSide}...` : `Mark ${editingConeSide} Cone`}</button>
+                          <button onClick={clearCone} className={softButtonClass}>Clear {editingConeSide}</button>
+                        </>)}
+                        {toolMode === 'line' && canUseLine && (<>
+                          <div className="w-full mb-2">
+                            <label className="mb-1 block text-[10px] uppercase tracking-[0.24em] text-zinc-500">Midpoint</label>
+                            <select value={snipeLineMidpoint} onChange={(e) => setSnipeLineMidpoint(e.target.value)} className={tinyInputClass + ' w-full'}>
+                              <option value="Any">Any (always visible)</option>
+                              {(selectedMap?.midpoints || []).map((mp) => <option key={mp} value={mp}>{mp}</option>)}
+                            </select>
+                          </div>
+                          <button onClick={beginLinePlacement} className={softButtonClass}>{placementMode === 'line_end' ? `Placing ${editingConeSide}...` : `Mark ${editingConeSide} Snipe`}</button>
+                          <button onClick={clearLine} className={softButtonClass}>Clear {editingConeSide}</button>
+                        </>)}
+                      </div>
+                      <div className="mt-2 text-xs text-zinc-500">
+                        {toolMode === 'cone' && !placementMode && (currentEditingCone ? `${editingConeSide} cone — ${Math.round(currentEditingCone.length * 20)}m, ${Math.round(currentEditingCone.spread)}° spread` : `No ${editingConeSide} cone yet.`)}
+                        {toolMode === 'cone' && placementMode === 'cone_first' && `Click 1st edge of ${editingConeSide} cone.`}
+                        {toolMode === 'cone' && placementMode === 'cone_second' && `Preview, then click 2nd edge.`}
+                        {toolMode === 'line' && !placementMode && (currentEditingLine ? `${editingConeSide} snipe — ${selectedSpot ? getDistanceMeters(selectedSpot.x, selectedSpot.y, currentEditingLine.endX, currentEditingLine.endY) : 0}m / max ${getMaxRangeMeters(primaryEditRole, editingConeSide)}m` : `No ${editingConeSide} snipe yet.`)}
+                        {toolMode === 'line' && placementMode === 'line_end' && `Move to preview, click impact.`}
+                      </div>
+                    </div>
+                  )}
+                  {canUseRoute && (
+                    <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3">
+                      <label className="mb-3 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">Routes</label>
+                      <div className="mb-3 flex gap-2">
+                        {(['Axis', 'Allies'] as ConeSide[]).map((s) => (
+                          <button key={s} onClick={() => setNewRouteConfig((p) => ({ ...p, side: s }))}
+                            className={`rounded-xl px-3 py-1.5 text-sm font-medium transition ${newRouteConfig.side === s ? s === 'Axis' ? 'border border-red-300/30 bg-red-600/80 text-white' : 'border border-blue-300/30 bg-blue-600/80 text-white' : 'border border-emerald-300/15 bg-emerald-900/35 text-emerald-50 hover:bg-emerald-800/55'}`}>{s}</button>
+                        ))}
+                      </div>
+                      <div className="mb-3">
+                        <label className="mb-1.5 block text-[10px] uppercase tracking-[0.24em] text-zinc-500">Midpoint</label>
+                        <select value={newRouteConfig.midpoint} onChange={(e) => setNewRouteConfig((p) => ({ ...p, midpoint: e.target.value }))} className={tinyInputClass + ' w-full'}>
+                          <option value="Any">Any Midpoint</option>
+                          {(selectedMap?.midpoints || []).map((mp) => <option key={mp} value={mp}>{mp}</option>)}
+                        </select>
+                      </div>
+                      <div className="mb-3">
+                        <label className="mb-1.5 block text-[10px] uppercase tracking-[0.24em] text-zinc-500">Color</label>
+                        <div className="flex flex-wrap gap-2">
+                          {ROUTE_COLORS.map((c) => (
+                            <button key={c.value} onClick={() => setNewRouteConfig((p) => ({ ...p, color: c.value }))} title={c.name}
+                              className={`h-6 w-6 rounded-full border-2 transition ${newRouteConfig.color === c.value ? 'border-white scale-125' : 'border-transparent hover:border-white/50'}`}
+                              style={{ backgroundColor: c.value }} />
+                          ))}
+                        </div>
+                      </div>
+                      <div className="mb-3">
+                        <label className="mb-1.5 block text-[10px] uppercase tracking-[0.24em] text-zinc-500">Label</label>
+                        <select value={newRouteConfig.label} onChange={(e) => setNewRouteConfig((p) => ({ ...p, label: e.target.value }))} className={tinyInputClass + ' w-full'}>
+                          {ROUTE_LABELS.map((l) => <option key={l} value={l}>{l}</option>)}
+                        </select>
+                      </div>
+                      <div className="mb-3">
+                        <label className="mb-1.5 block text-[10px] uppercase tracking-[0.24em] text-zinc-500">Width — {newRouteConfig.strokeWidth}px</label>
+                        <input type="range" min="2" max="8" value={newRouteConfig.strokeWidth} onChange={(e) => setNewRouteConfig((p) => ({ ...p, strokeWidth: Number(e.target.value) }))} className="w-full accent-emerald-500" />
+                      </div>
+                      <div className="mb-3">
+                        <label className="mb-1.5 block text-[10px] uppercase tracking-[0.24em] text-zinc-500">Route Video</label>
+                        <input value={newRouteConfig.youtube} onChange={(e) => setNewRouteConfig((p) => ({ ...p, youtube: e.target.value }))} placeholder="YouTube link" className={tinyInputClass + ' w-full'} />
+                      </div>
+                      <button onClick={() => setRouteDrawMode((p) => !p)} className={`w-full ${routeDrawMode ? buttonClass : softButtonClass}`}>
+                        {routeDrawMode ? 'Drawing — hold mouse on map' : 'Draw Route'}
+                      </button>
+                      {routeDrawMode && <p className="mt-1.5 text-xs text-zinc-500">Hold mouse down and drag. Release to finish.</p>}
+                      {editSpot.routes.length > 0 && (
+                        <div className="mt-3 space-y-2">
+                          <label className="block text-[10px] uppercase tracking-[0.24em] text-zinc-500">Saved ({editSpot.routes.length})</label>
+                          {editSpot.routes.map((r) => (
+                            <div key={r.id} className="flex items-center gap-2 rounded-xl border border-emerald-400/10 bg-emerald-950/25 px-3 py-2">
+                              <span className="h-3 w-3 flex-shrink-0 rounded-full" style={{ backgroundColor: r.color }} />
+                              <span className="flex-1 text-xs text-zinc-300"><span className="font-medium text-white">{r.label}</span>{` · `}{r.side}{` · `}{getRouteTotalDistance(r)}m</span>
+                              <button onClick={() => deleteRoute(r.id)} className="text-xs text-red-400 hover:text-red-300">✕</button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  <textarea value={editSpot.notes} onChange={(e) => setEditSpot((p) => ({ ...p, notes: e.target.value }))} placeholder="Notes" rows={2} className={inputClass} />
+                  <input value={editSpot.youtube} onChange={(e) => setEditSpot((p) => ({ ...p, youtube: e.target.value }))} placeholder="YouTube link" className={inputClass} />
+                  <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-emerald-400/10 bg-emerald-950/25 px-4 py-3 hover:bg-emerald-900/30">
+                    <input type="checkbox" checked={editSpot.requiresBuildable} className="accent-emerald-500 h-4 w-4" onChange={(e) => setEditSpot((p) => ({ ...p, requiresBuildable: e.target.checked }))} />
+                    <div><div className="text-sm font-medium text-white">Requires Buildable</div><div className="text-xs text-zinc-500">Spot needs a buildable</div></div>
+                  </label>
+                  <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3 space-y-3">
+                    <label className="flex cursor-pointer items-center gap-3">
+                      <input type="checkbox" checked={editSpot.verified} className="accent-emerald-500 h-4 w-4" onChange={(e) => setEditSpot((p) => ({ ...p, verified: e.target.checked }))} />
+                      <div><div className="text-sm font-medium text-white">Verified</div><div className="text-xs text-zinc-500">Works in current patch</div></div>
+                    </label>
+                    <div>
+                      <label className="mb-1.5 block text-[10px] uppercase tracking-[0.24em] text-zinc-500">Patch Version</label>
+                      <input value={editSpot.patchVersion} onChange={(e) => setEditSpot((p) => ({ ...p, patchVersion: e.target.value }))} placeholder="e.g. 14.3" className={tinyInputClass + ' w-full'} />
+                    </div>
+                  </div>
+                  <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3">
+                    <label className="mb-2 block text-[11px] uppercase tracking-[0.28em] text-zinc-400">Photos ({editSpot.images.length + editSpotNewPreviews.length}/5)</label>
+                    {editSpot.images.length > 0 && (
+                      <div className="mb-3 grid grid-cols-3 gap-2">
+                        {editSpot.images.map((img, idx) => (
+                          <div key={idx} className="relative">
+                            <img src={img} alt="" className="h-20 w-full rounded-xl border border-zinc-800 object-cover" />
+                            <button onClick={() => setEditSpot((p) => ({ ...p, images: p.images.filter((_, i) => i !== idx) }))} className="absolute right-1 top-1 rounded-full bg-black/80 px-2 py-0.5 text-xs text-white hover:bg-red-900/90">✕</button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {editSpotNewPreviews.length > 0 && (
+                      <div className="mb-3 grid grid-cols-3 gap-2">
+                        {editSpotNewPreviews.map((url, idx) => (
+                          <div key={idx} className="relative">
+                            <img src={url} alt="" className="h-20 w-full rounded-xl border border-emerald-600/40 object-cover" />
+                            <span className="absolute left-1 top-1 rounded-full bg-emerald-700/90 px-1.5 py-0.5 text-[10px] text-white">New</span>
+                            <button onClick={() => { URL.revokeObjectURL(editSpotNewPreviews[idx]); setEditSpotNewPreviews((p) => p.filter((_, i) => i !== idx)); setEditSpotNewFiles((p) => p.filter((_, i) => i !== idx)) }} className="absolute right-1 top-1 rounded-full bg-black/80 px-2 py-0.5 text-xs text-white hover:bg-red-900/90">✕</button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {editSpot.images.length + editSpotNewPreviews.length < 5 && (
+                      <>
+                        <input ref={editFileInputRef} type="file" accept="image/*" multiple
+                          onChange={(e) => {
+                            const files = Array.from(e.target.files || [])
+                            const slots = 5 - editSpot.images.length - editSpotNewPreviews.length
+                            const limited = files.slice(0, slots); if (!limited.length) return
+                            const previews = limited.map((f) => URL.createObjectURL(f))
+                            setEditSpotNewFiles((p) => [...p, ...limited]); setEditSpotNewPreviews((p) => [...p, ...previews])
+                            if (editFileInputRef.current) editFileInputRef.current.value = ''
+                          }} className="text-sm text-zinc-400 file:mr-3 file:rounded-xl file:border-0 file:bg-emerald-900/60 file:px-3 file:py-2 file:text-sm file:text-white hover:file:bg-emerald-800" />
+                        <p className="mt-1.5 text-xs text-zinc-600">{5 - editSpot.images.length - editSpotNewPreviews.length} slot{5 - editSpot.images.length - editSpotNewPreviews.length !== 1 ? 's' : ''} remaining</p>
+                      </>
+                    )}
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={saveEditedSpot} className={buttonClass}>Save Changes</button>
+                    <button onClick={cancelEditSpot} className={softButtonClass}>Cancel</button>
+                  </div>
+                </div>
+              ) : (
+                /* ── VIEW */
+                <div className="space-y-3">
+                  {selectedSpot.images && selectedSpot.images.length > 0 && (
+                    <>
+                      <img src={selectedSpot.images[0]} alt={selectedSpot.title}
+                        className="max-h-[420px] w-full cursor-pointer rounded-[18px] border border-zinc-800 bg-black/30 object-contain"
+                        onClick={() => setLightboxImage(selectedSpot.images![0])} />
+                      {selectedSpot.images.length > 1 && (
+                        <div className="grid grid-cols-4 gap-1.5">
+                          {selectedSpot.images.slice(1).map((img, idx) => (
+                            <img key={idx} src={img} alt="" className="h-12 w-full cursor-pointer rounded-xl border border-zinc-800 object-cover" onClick={() => setLightboxImage(img)} />
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  )}
+                  <div className="flex flex-wrap gap-1.5 text-xs uppercase tracking-[0.16em]">
+                    {selectedSpot.roles.map((r) => <span key={r} className={`rounded-full px-2 py-0.5 text-white ${getRoleColor(r)}`}>{r}</span>)}
+                    <span className={`rounded-full px-2 py-0.5 ${getSideClasses(selectedSpot.side).badge}`}>{selectedSpot.side}</span>
+                    {selectedSpot.verified ? <span className="rounded-full border border-emerald-400/40 bg-emerald-800/50 px-2 py-0.5 text-emerald-200">✓{selectedSpot.patchVersion ? ` ${selectedSpot.patchVersion}` : ''}</span> : <span className="rounded-full border border-zinc-600/40 bg-zinc-800/50 px-2 py-0.5 text-zinc-500">Unverified</span>}
+                    {selectedSpot.requiresBuildable && <span className="rounded-full border border-amber-400/30 bg-amber-900/40 px-2 py-0.5 text-amber-200">Buildable</span>}
+                    {selectedSpot.cones?.Axis    && <span className="rounded-full border border-red-300/15 bg-red-900/35 px-2 py-0.5 text-white">Axis Cone</span>}
+                    {selectedSpot.cones?.Allies  && <span className="rounded-full border border-blue-300/15 bg-blue-900/35 px-2 py-0.5 text-white">Allies Cone</span>}
+                    {selectedSpot.fireLines?.Axis   && <span className="rounded-full border border-red-300/15 bg-red-900/35 px-2 py-0.5 text-white">Axis Snipe</span>}
+                    {selectedSpot.fireLines?.Allies && <span className="rounded-full border border-blue-300/15 bg-blue-900/35 px-2 py-0.5 text-white">Allies Snipe</span>}
+                    {selectedSpot.pending && <span className="rounded-full border border-emerald-300/20 bg-emerald-950/70 px-2 py-0.5 text-emerald-100">Saving...</span>}
+                  </div>
+                  <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-zinc-500">
+                    {selectedSpot.createdByName && <span>Added by <span className="text-zinc-300">{selectedSpot.createdByName}</span>{selectedSpot.created_at && <span className="ml-1 text-zinc-600">· {new Date(selectedSpot.created_at).toLocaleDateString()}</span>}</span>}
+                    {selectedSpot.lastEditedByName && <span>Edited by <span className="text-zinc-300">{selectedSpot.lastEditedByName}</span>{selectedSpot.lastEditedAt && <span className="ml-1 text-zinc-600">· {new Date(selectedSpot.lastEditedAt).toLocaleDateString()}</span>}</span>}
+                  </div>
+                  {selectedSpot.notes && <p className="text-sm leading-5 text-zinc-300">{selectedSpot.notes}</p>}
+                  {!selectedSpot.pending && (
+                    <div className="flex items-center gap-2 rounded-2xl border border-zinc-700/40 bg-zinc-900/40 px-3 py-2">
+                      <label className="text-[11px] uppercase tracking-[0.28em] text-zinc-500 whitespace-nowrap">Size</label>
+                      <input type="range" min="-8" max="12" step="1"
+                        value={localSpotSizes[selectedSpot.id] ?? 0}
+                        onChange={(e) => {
+                          const v = Number(e.target.value)
+                          const next = { ...localSpotSizes, [selectedSpot.id]: v }
+                          setLocalSpotSizes(next)
+                          localStorage.setItem('hll_spot_sizes', JSON.stringify(next))
+                        }}
+                        className="w-full accent-zinc-500" />
+                      <span className="text-[9px] text-zinc-600 whitespace-nowrap">👁 only you</span>
+                    </div>
+                  )}
+                  {(selectedSpot.cones?.Axis || selectedSpot.cones?.Allies) && (
+                    <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3">
+                      <div className="mb-2 text-xs font-medium uppercase tracking-[0.2em] text-zinc-400">LOS Cones</div>
+                      {selectedSpot.cones?.Axis && <div className="grid grid-cols-3 gap-1 text-xs text-red-300"><div>Dir <span className="text-white">{Math.round(selectedSpot.cones.Axis.angle)}°</span></div><div>Spread <span className="text-white">{Math.round(selectedSpot.cones.Axis.spread)}°</span></div><div>Range <span className="text-white">{Math.round(selectedSpot.cones.Axis.length * 20)}m</span></div></div>}
+                      {selectedSpot.cones?.Allies && <div className="mt-1.5 grid grid-cols-3 gap-1 text-xs text-blue-300"><div>Dir <span className="text-white">{Math.round(selectedSpot.cones.Allies.angle)}°</span></div><div>Spread <span className="text-white">{Math.round(selectedSpot.cones.Allies.spread)}°</span></div><div>Range <span className="text-white">{Math.round(selectedSpot.cones.Allies.length * 20)}m</span></div></div>}
+                    </div>
+                  )}
+                  {(selectedSpot.fireLines?.Axis || selectedSpot.fireLines?.Allies) && (
+                    <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3">
+                      <div className="mb-2 text-xs font-medium uppercase tracking-[0.2em] text-zinc-400">Snipe Lines</div>
+                      {selectedSpot.fireLines?.Axis && (() => { const l = selectedSpot.fireLines!.Axis!; const dm = getDistanceMeters(selectedSpot.x, selectedSpot.y, l.endX, l.endY); const maxM = getMaxRangeMeters(selectedSpot.roles?.[0] || selectedSpot.role || 'MG', 'Axis'); return <div className="grid grid-cols-3 gap-1 text-xs text-red-300"><div>Axis <span className="text-white">{dm}m</span></div><div>Max <span className="text-white">{maxM}m</span>{dm > maxM && <span className="ml-1 text-yellow-400">OUT</span>}</div><div className="text-zinc-500">{l.midpoint !== 'Any' ? l.midpoint : 'Any'}</div></div> })()}
+                      {selectedSpot.fireLines?.Allies && (() => { const l = selectedSpot.fireLines!.Allies!; const dm = getDistanceMeters(selectedSpot.x, selectedSpot.y, l.endX, l.endY); const maxM = getMaxRangeMeters(selectedSpot.roles?.[0] || selectedSpot.role || 'MG', 'Allies'); return <div className="mt-1.5 grid grid-cols-3 gap-1 text-xs text-blue-300"><div>Allies <span className="text-white">{dm}m</span></div><div>Max <span className="text-white">{maxM}m</span>{dm > maxM && <span className="ml-1 text-yellow-400">OUT</span>}</div><div className="text-zinc-500">{l.midpoint !== 'Any' ? l.midpoint : 'Any'}</div></div> })()}
+                    </div>
+                  )}
+                  {(selectedSpot.routes || []).length > 0 && (
+                    <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3">
+                      <div className="mb-2 text-xs font-medium uppercase tracking-[0.2em] text-zinc-400">Routes</div>
+                      <div className="space-y-1.5">
+                        {(selectedSpot.routes || []).map((route) => {
+                          const isSel = selectedRouteId === route.id
+                          return (
+                            <button key={route.id} onClick={() => setSelectedRouteId(isSel ? null : route.id)}
+                              className={`w-full rounded-xl border p-2 text-left transition ${isSel ? 'border-emerald-300/30 bg-emerald-600/15' : 'border-emerald-400/8 bg-emerald-950/20 hover:bg-emerald-900/30'}`}>
+                              <div className="flex items-start gap-3">
+                                <span className="h-3 w-3 flex-shrink-0 rounded-full mt-0.5" style={{ backgroundColor: route.color }} />
+                                <span className="text-sm font-medium text-white">{route.label}</span>
+                                <span className={`ml-auto rounded-full px-2 py-0.5 text-[10px] ${route.side === 'Axis' ? 'bg-red-700/70 text-red-100' : 'bg-blue-700/70 text-blue-100'}`}>{route.side}</span>
+                              </div>
+                              <div className="mt-0.5 flex gap-3 text-[11px] text-zinc-500">
+                                <span>{route.midpoint}</span><span>{getRouteTotalDistance(route)}m</span>{route.youtube && <span className="text-emerald-400">▶</span>}
+                              </div>
+                            </button>
+                          )
+                        })}
+                      </div>
+                      {selectedRoute && (selectedRouteEmbed ? (
+                        <div className="mt-3 overflow-hidden rounded-[18px] border border-zinc-800 bg-black">
+                          <iframe className="aspect-video w-full" src={`${selectedRouteEmbed}?rel=0&modestbranding=1`} title={`${selectedRoute.label} route video`} allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowFullScreen />
+                        </div>
+                      ) : selectedRoute.youtube ? (
+                        <a href={selectedRoute.youtube} target="_blank" rel="noreferrer"
+                          className="mt-2 inline-flex items-center rounded-xl border border-emerald-300/15 bg-emerald-900/35 px-3 py-1.5 text-sm hover:bg-emerald-800/55">
+                          ▶ Open route video ↗
+                        </a>
+                      ) : null)}
+                    </div>
+                  )}
+                  {selectedSpotEmbedUrl ? (
+                    <div className="overflow-hidden rounded-[18px] border border-zinc-800 bg-black">
+                      <iframe className="aspect-video w-full" src={`${selectedSpotEmbedUrl}?rel=0&modestbranding=1`} title={`${selectedSpot.title} video`} allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowFullScreen />
+                    </div>
+                  ) : selectedSpot.youtube ? (
+                    <a href={selectedSpot.youtube} target="_blank" rel="noreferrer"
+                      className="inline-flex w-fit items-center rounded-2xl border border-emerald-300/15 bg-emerald-900/35 px-4 py-2 text-sm font-medium hover:bg-emerald-800/55">
+                      ▶ Open on YouTube ↗
+                    </a>
+                  ) : null}
+                  {/* Comments */}
+                  <div className="rounded-[18px] border border-emerald-400/10 bg-emerald-950/18 p-3">
+                    <div className="mb-2 text-xs font-medium uppercase tracking-[0.2em] text-zinc-400">Comments {comments.length > 0 && <span className="text-zinc-500">({comments.length})</span>}</div>
+                    {isLoadingComments ? (
+                      <div className="py-2 text-xs text-zinc-600">Loading...</div>
+                    ) : comments.length === 0 ? (
+                      <div className="py-1 text-xs text-zinc-600">No comments yet.</div>
+                    ) : (
+                      <div className="mb-3 space-y-2 max-h-40 overflow-y-auto">
+                        {comments.map((c) => (
+                          <div key={c.id} className="group flex gap-2">
+                            <div className="flex-1 rounded-xl border border-emerald-400/8 bg-emerald-950/25 px-3 py-2">
+                              <div className="flex items-center gap-2 mb-1">
+                                <span className="text-xs font-medium text-emerald-300">{c.user_name}</span>
+                                <span className="text-[10px] text-zinc-600">{new Date(c.created_at).toLocaleDateString()}</span>
+                              </div>
+                              <p className="text-sm text-zinc-300 leading-5">{c.content}</p>
+                            </div>
+                            {(c.user_id === userId || userRole === 'admin') && (
+                              <button onClick={() => deleteComment(c.id)} className="opacity-0 group-hover:opacity-100 self-start mt-1 text-zinc-600 hover:text-red-400 transition text-xs">✕</button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div className="flex gap-2 mt-2">
+                      <input value={commentText} onChange={(e) => setCommentText(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); postComment() } }}
+                        placeholder="Add a comment..." className={tinyInputClass + ' flex-1'} />
+                      <button onClick={postComment} disabled={!commentText.trim()}
+                        className="rounded-xl border border-emerald-300/25 bg-emerald-600/80 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed">Post</button>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-zinc-700">
+                    <span><kbd className="rounded bg-zinc-800 px-1 py-0.5">↑↓</kbd> navigate</span>
+                    {canEdit && <span><kbd className="rounded bg-zinc-800 px-1 py-0.5">E</kbd> edit</span>}
+                    <span><kbd className="rounded bg-zinc-800 px-1 py-0.5">Esc</kbd> close</span>
+                  </div>
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    {canEdit && <button onClick={startEditingSpot} disabled={!!selectedSpot.pending} className={`${softButtonClass} ${selectedSpot.pending ? 'cursor-not-allowed opacity-60' : ''}`}>Edit</button>}
+                    {canEdit && <button onClick={copySelectedSpot} disabled={!!selectedSpot.pending} className={`${softButtonClass} ${selectedSpot.pending ? 'cursor-not-allowed opacity-60' : ''}`}>Copy</button>}
+                    {typeof selectedSpot.id === 'number' && (
+                      <button onClick={() => {
+                        const url = new URL(window.location.href)
+                        url.searchParams.set('spot', String(selectedSpot.id))
+                        navigator.clipboard.writeText(url.toString()).then(() => alert('Link copied!')).catch(() => alert(url.toString()))
+                      }} className={softButtonClass}>🔗 Share</button>
+                    )}
+                    {canDelete && <button onClick={deleteSelectedSpot} disabled={!!selectedSpot.pending} className={`inline-flex items-center rounded-2xl border border-red-700 bg-red-900/60 px-4 py-2 text-sm font-medium hover:bg-red-800/70 ${selectedSpot.pending ? 'cursor-not-allowed opacity-60' : ''}`}>Delete</button>}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Undo delete toast */}
       {undoToast && (
-        <div className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 flex items-center gap-3 rounded-2xl border border-red-500/30 bg-[rgba(20,5,5,0.95)] px-5 py-3 shadow-[0_8px_32px_rgba(0,0,0,0.6)] backdrop-blur-xl">
+        <div className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 flex items-center gap-3 rounded-2xl border border-red-500/30 bg-[rgba(20,5,5,0.95)] px-5 py-3 shadow-[0_8px_32px_rgba(0,0,0,0.6)] backdrop-blur-xl"
+          style={{ animation: 'slideUp 0.25s cubic-bezier(0.4,0,0.2,1)' }}>
+          <style>{`@keyframes slideUp { from { opacity:0; transform: translate(-50%, 16px); } to { opacity:1; transform: translate(-50%, 0); } }`}</style>
           <span className="text-sm text-zinc-200">
             <span className="font-medium text-white">"{undoToast.spot.title}"</span> deleted
           </span>
@@ -2697,5 +2913,13 @@ export default function IntelMap() {
         </div>
       )}
     </div>
+  )
+}
+
+export default function IntelMap() {
+  return (
+    <React.Suspense fallback={null}>
+      <IntelMapInner />
+    </React.Suspense>
   )
 }
