@@ -694,10 +694,6 @@ function IntelMapInner() {
   const [isLoadingComments, setIsLoadingComments] = React.useState(false)
 
   // ── activity feed state
-  const [feedOpen,       setFeedOpen]       = React.useState(() => {
-    if (typeof window === 'undefined') return false
-    return localStorage.getItem('hll_feed_open') !== 'false'
-  })
   const [feedItems,      setFeedItems]      = React.useState<any[]>([])
   const [feedLoading,    setFeedLoading]    = React.useState(false)
   const [feedLastSeen,   setFeedLastSeen]   = React.useState<string>(() => {
@@ -1188,22 +1184,6 @@ function IntelMapInner() {
     return () => clearInterval(interval)
   }, [loadFeed])
 
-  const openFeed = () => {
-    setFeedOpen(true)
-    localStorage.setItem('hll_feed_open', 'true')
-    // Mark all as seen
-    if (feedItems.length > 0) {
-      const newest = feedItems[0]?.changed_at ?? ''
-      setFeedLastSeen(newest)
-      setFeedHasNew(false)
-      localStorage.setItem('hll_feed_last_seen', newest)
-    }
-  }
-
-  const closeFeed = () => {
-    setFeedOpen(false)
-    localStorage.setItem('hll_feed_open', 'false')
-  }
 
   // ── effects: load comments when spot selected
   React.useEffect(() => {
@@ -1983,7 +1963,84 @@ function IntelMapInner() {
         </div>
 
         {/* ── Main grid */}
-        <div className="grid grid-cols-1 items-start gap-5 xl:grid-cols-[minmax(0,1.7fr)_390px]">
+        <div className="grid grid-cols-1 items-start gap-5 xl:grid-cols-[220px_minmax(0,1fr)_390px]">
+
+          {/* ── Activity feed card */}
+          <div className="xl:sticky xl:self-start" style={{ top: `${panelTop}px` }}>
+            <div className={`${panelClass} p-4`}>
+              {/* Header */}
+              <div className="mb-3 flex items-center justify-between">
+                <span className="text-xs font-semibold uppercase tracking-[0.2em] text-zinc-300">Activity</span>
+                <div className="flex items-center gap-2">
+                  {feedHasNew && (
+                    <span className="rounded-full border border-emerald-300/30 bg-emerald-600/60 px-2 py-0.5 text-[10px] text-emerald-100">
+                      New
+                    </span>
+                  )}
+                  <button onClick={loadFeed} disabled={feedLoading}
+                    className="text-zinc-600 hover:text-zinc-300 transition text-sm" title="Refresh">
+                    {feedLoading ? '…' : '↻'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Feed items */}
+              <div className="max-h-[72vh] overflow-y-auto space-y-px">
+                {feedLoading && feedItems.length === 0 ? (
+                  <div className="py-4 text-center text-xs text-zinc-600">Loading...</div>
+                ) : feedItems.length === 0 ? (
+                  <div className="py-4 text-center text-xs text-zinc-600">No changes yet.</div>
+                ) : feedItems.map((item) => {
+                  const isNew      = feedLastSeen !== '' && item.changed_at > feedLastSeen
+                  const spotName   = item.snapshot?.title ?? `Spot #${item.spot_id}`
+                  const mapId      = item.snapshot?.map_id ?? ''
+                  const mapLabel   = maps.find((m) => m.id === mapId)?.name ?? mapId
+                  const date       = new Date(item.changed_at)
+                  const diffMs     = Date.now() - date.getTime()
+                  const diffMins   = Math.floor(diffMs / 60000)
+                  const diffHrs    = Math.floor(diffMins / 60)
+                  const timeStr    = diffMins < 1  ? 'just now'
+                    : diffMins < 60 ? `${diffMins}m ago`
+                    : diffHrs  < 24 ? `${diffHrs}h ago`
+                    : date.toLocaleDateString()
+
+                  return (
+                    <div key={item.id}
+                      className={`flex gap-2 rounded-xl px-2 py-2.5 transition-colors ${isNew ? 'bg-emerald-500/8' : 'hover:bg-emerald-900/20'}`}>
+                      <div className="mt-1.5 flex-shrink-0">
+                        {isNew
+                          ? <span className="block h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                          : <span className="block h-1.5 w-1.5 rounded-full bg-zinc-700" />}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[11px] leading-4 text-zinc-400">
+                          <span className="font-medium text-emerald-300">{item.changed_by_name || 'Someone'}</span>
+                          {' · '}
+                          <button
+                            onClick={() => {
+                              // Switch to the right map and open the spot
+                              const targetMap = maps.find((m) => m.id === mapId)
+                              if (targetMap) {
+                                setSelectedMapId(mapId)
+                                const spot = targetMap.spots.find((s) => s.id === item.spot_id)
+                                if (spot) setTimeout(() => selectSpot(spot), 80)
+                              }
+                            }}
+                            className="font-medium text-white hover:text-emerald-300 transition text-left">
+                            {spotName}
+                          </button>
+                        </div>
+                        {mapLabel && (
+                          <div className="mt-0.5 text-[10px] text-zinc-600">{mapLabel}</div>
+                        )}
+                        <div className="mt-0.5 text-[10px] text-zinc-700">{timeStr}</div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          </div>
 
           {/* ── Map panel */}
           <div className={`${panelClass} p-4 md:p-5`}>
@@ -2050,76 +2107,6 @@ function IntelMapInner() {
                   </div>
                 )}
 
-                {/* ── Activity feed panel */}
-                <div className="pointer-events-auto w-[240px]">
-                  {feedOpen ? (
-                    <div className="rounded-2xl border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.96),rgba(8,20,12,0.94))] shadow-[0_12px_30px_rgba(0,0,0,0.45)] backdrop-blur-xl overflow-hidden"
-                      style={{ animation: 'fadeSlideDown 0.2s ease' }}>
-                      <style>{`@keyframes fadeSlideDown { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:translateY(0); } }`}</style>
-                      {/* Feed header */}
-                      <div className="flex items-center justify-between px-3 py-2 border-b border-emerald-400/10">
-                        <span className="text-[11px] uppercase tracking-[0.24em] text-zinc-400 font-medium">Recent Changes</span>
-                        <div className="flex items-center gap-2">
-                          <button onClick={loadFeed} disabled={feedLoading}
-                            className="text-zinc-600 hover:text-zinc-300 transition text-xs" title="Refresh">
-                            {feedLoading ? '…' : '↻'}
-                          </button>
-                          <button onClick={closeFeed}
-                            className="text-zinc-600 hover:text-zinc-300 transition text-xs">✕</button>
-                        </div>
-                      </div>
-                      {/* Feed items */}
-                      <div className="max-h-[40vh] overflow-y-auto">
-                        {feedLoading && feedItems.length === 0 ? (
-                          <div className="px-3 py-4 text-xs text-zinc-600">Loading...</div>
-                        ) : feedItems.length === 0 ? (
-                          <div className="px-3 py-4 text-xs text-zinc-600">No changes recorded yet.</div>
-                        ) : (
-                          feedItems.map((item, i) => {
-                            const isNew = item.changed_at > feedLastSeen && feedLastSeen !== ''
-                            const spotName = item.snapshot?.title ?? `Spot #${item.spot_id}`
-                            const mapName  = item.snapshot?.map_id ?? ''
-                            const date     = new Date(item.changed_at)
-                            const now      = Date.now()
-                            const diffMs   = now - date.getTime()
-                            const diffMins = Math.floor(diffMs / 60000)
-                            const diffHrs  = Math.floor(diffMins / 60)
-                            const timeStr  = diffMins < 1   ? 'just now'
-                              : diffMins < 60  ? `${diffMins}m ago`
-                              : diffHrs  < 24  ? `${diffHrs}h ago`
-                              : date.toLocaleDateString()
-                            return (
-                              <div key={item.id}
-                                className={`flex gap-2 px-3 py-2.5 border-b border-emerald-400/6 last:border-0 transition ${isNew ? 'bg-emerald-500/8' : ''}`}>
-                                {isNew && <span className="mt-1.5 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-emerald-400" />}
-                                {!isNew && <span className="mt-1.5 h-1.5 w-1.5 flex-shrink-0" />}
-                                <div className="min-w-0 flex-1">
-                                  <div className="text-[11px] text-zinc-300 leading-4">
-                                    <span className="font-medium text-emerald-300">{item.changed_by_name || 'Someone'}</span>
-                                    {' edited '}
-                                    <span className="font-medium text-white">{spotName}</span>
-                                    {mapName && <span className="text-zinc-500"> · {mapName}</span>}
-                                  </div>
-                                  <div className="mt-0.5 text-[10px] text-zinc-600">{timeStr}</div>
-                                </div>
-                              </div>
-                            )
-                          })
-                        )}
-                      </div>
-                    </div>
-                  ) : (
-                    /* Collapsed tab */
-                    <button onClick={openFeed}
-                      className="relative flex items-center gap-2 rounded-2xl border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.94),rgba(8,20,12,0.92))] px-3 py-2 text-xs text-zinc-400 shadow-[0_12px_30px_rgba(0,0,0,0.35)] backdrop-blur-xl transition hover:text-white hover:border-emerald-300/25">
-                      <span>📋</span>
-                      <span className="uppercase tracking-[0.2em] text-[10px]">Activity</span>
-                      {feedHasNew && (
-                        <span className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full bg-emerald-400 ring-2 ring-black" />
-                      )}
-                    </button>
-                  )}
-                </div>
               </div>
 
               {/* Map content — BOTH width and height are set in JS so the container always
