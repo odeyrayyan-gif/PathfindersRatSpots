@@ -147,8 +147,12 @@ function IntelMapInner() {
   const [feedHasNew,     setFeedHasNew]     = React.useState(false)
 
   // ── list filter state
-  const [roleFilters,     setRoleFilters]     = React.useState<Set<string>>(new Set())  // empty = all
-  const [sideFilters,     setSideFilters]     = React.useState<Set<string>>(new Set())  // empty = all
+  const [roleFilters, setRoleFilters] = React.useState<Set<string>>(
+  new Set(FIXED_ROLES.map((r) => r.name))
+)
+  const [sideFilters, setSideFilters] = React.useState<Set<string>>(
+  new Set(['Axis', 'Allies', 'Both'])
+)
   const [buildableFilter, setBuildableFilter] = React.useState(false) // true = only show buildable spots
   const [sortMode,        setSortMode]        = React.useState<'alphabetical' | 'role'>('alphabetical')
   const [searchTerm,      setSearchTerm]      = React.useState('')
@@ -169,7 +173,7 @@ function IntelMapInner() {
   const [isSavingNewSpot, setIsSavingNewSpot] = React.useState(false)
   const [pendingPlacement,setPendingPlacement]= React.useState<{ x: number; y: number } | null>(null)
   const [newSpot,         setNewSpot]         = React.useState({
-    title: '', roles: ['MG'] as string[], side: 'Both' as SpotSide,
+    title: '', roles: [] as string[], side: '' as SpotSide,
     notes: '', youtube: '', images: [] as string[], imageFiles: [] as File[], size: 12,
     requiresBuildable: false, verified: false, patchVersion: '',
   })
@@ -297,11 +301,11 @@ function IntelMapInner() {
   // ── filtered + sorted spots
   const filteredSpots = React.useMemo(() =>
     currentSpots.filter((spot) => {
-      const roleMatch = roleFilters.size === 0 || (spot.roles || []).some((r) => roleFilters.has(r))
-      const sideMatch = sideFilters.size === 0 ||
-        (sideFilters.has('Axis')   && (spot.side === 'Axis'   || spot.side === 'Both')) ||
-        (sideFilters.has('Allies') && (spot.side === 'Allies' || spot.side === 'Both')) ||
-        (sideFilters.has('Both')   && spot.side === 'Both')
+      const roleMatch = (spot.roles || []).some((r) => roleFilters.has(r))
+      const sideMatch =
+  (sideFilters.has('Axis')   && (spot.side === 'Axis'   || spot.side === 'Both')) ||
+  (sideFilters.has('Allies') && (spot.side === 'Allies' || spot.side === 'Both')) ||
+  (sideFilters.has('Both')   && spot.side === 'Both')
       const buildMatch = !buildableFilter || spot.requiresBuildable
       const search = searchTerm.trim().toLowerCase()
       const textMatch = search === '' ||
@@ -348,7 +352,7 @@ function IntelMapInner() {
 
   // ── helpers
   const resetNewSpotState = React.useCallback(() => {
-    setNewSpot({ title: '', roles: ['MG'], side: 'Both', notes: '', youtube: '', images: [], imageFiles: [], size: 12, requiresBuildable: false, verified: false, patchVersion: '' })
+    setNewSpot({ title: '', roles: [], side: '' as SpotSide, notes: '', youtube: '', images: [], imageFiles: [], size: 12, requiresBuildable: false, verified: false, patchVersion: '' })
     if (fileInputRef.current) fileInputRef.current.value = ''
   }, [])
 
@@ -458,7 +462,7 @@ function IntelMapInner() {
   React.useEffect(() => {
     const currentMap = maps.find((m) => m.id === selectedMapId)
     setSelectedSpot(null); setIsDrawerOpen(false)
-    setSearchTerm(''); setRoleFilters(new Set()); setSideFilters(new Set()); setBuildableFilter(false); setSortMode('alphabetical')
+    setSearchTerm(''); setRoleFilters(new Set(FIXED_ROLES.map((r) => r.name))); setSideFilters(new Set(['Axis', 'Allies', 'Both'])); setBuildableFilter(false); setSortMode('alphabetical')
     setScale(1); setPosition({ x: 0, y: 0 })
     setShowAddSpot(false); setPendingPlacement(null); setShowSatellite(false)
     setEditingSpotId(null)
@@ -911,6 +915,7 @@ function IntelMapInner() {
     if (!pendingPlacement) { alert('Click on the map first to place the spot.'); return }
     if (!newSpot.title.trim()) { alert('Enter a title before saving.'); return }
     if (!newSpot.roles.length) { alert('Choose at least one role.'); return }
+    if (!newSpot.side)         { alert('Choose a side.'); return }
     if (!selectedMapId)        { alert('No map selected.'); return }
 
     const primaryRole = newSpot.roles[0] || 'MG'
@@ -1380,7 +1385,7 @@ function IntelMapInner() {
               <div className="flex flex-wrap gap-x-3 gap-y-1.5">
                 {roleNames.map((r) => (
                   <label key={r} className="flex cursor-pointer items-center gap-1.5 text-xs text-zinc-300 hover:text-white">
-                    <input type="checkbox" checked={roleFilters.has(r)} className="accent-emerald-500"
+                    <input type="checkbox" checked={roleFilters.has(r)} className="h-4 w-4 accent-emerald-500"
                       onChange={() => setRoleFilters((prev) => {
                         const next = new Set(prev)
                         next.has(r) ? next.delete(r) : next.add(r)
@@ -2255,8 +2260,15 @@ function IntelMapInner() {
                       })}
                     </div>
                   </div>
-                  <select value={newSpot.side} onChange={(e) => setNewSpot((p) => ({ ...p, side: e.target.value as SpotSide }))} className={inputClass}>
-                    <option value="Axis">Axis</option><option value="Allies">Allies</option><option value="Both">Both</option>
+                  <select
+                    value={newSpot.side}
+                    onChange={(e) => setNewSpot((p) => ({ ...p, side: e.target.value as SpotSide }))}
+                    className={inputClass}
+                  >
+                    <option value="" disabled>Select side...</option>
+                    <option value="Axis">Axis</option>
+                    <option value="Allies">Allies</option>
+                    <option value="Both">Both</option>
                   </select>
                   <div className="flex items-center gap-2 rounded-2xl border border-emerald-400/10 bg-emerald-950/25 px-3 py-2">
                     <label className="text-[11px] uppercase tracking-[0.28em] text-zinc-400 whitespace-nowrap">Size</label>
