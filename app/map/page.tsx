@@ -145,7 +145,6 @@ function IntelMapInner() {
     return localStorage.getItem('hll_feed_last_seen') ?? ''
   })
   const [feedHasNew,     setFeedHasNew]     = React.useState(false)
-  const [showActivity, setShowActivity] = React.useState(true)
 
   // ── list filter state
   const [roleFilters,     setRoleFilters]     = React.useState<Set<string>>(new Set())  // empty = all
@@ -234,7 +233,7 @@ function IntelMapInner() {
   const [showSatellite,  setShowSatellite]  = React.useState(false)
   const [overlayOpacity, setOverlayOpacity] = React.useState(55)
   const [overlayBroken,  setOverlayBroken]  = React.useState<Record<string, boolean>>({})
-  const [naturalAspect,  setNaturalAspect]  = React.useState<number | null>(null)
+  const [naturalAspect,  setNaturalAspect]  = React.useState<number>(1)
   const [containerDims,  setContainerDims]  = React.useState<{ w: number; h: number } | null>(null)
   // ── local display size offset — stored in localStorage, never written to DB
   // Each user can shift all dot sizes up/down without affecting others.
@@ -467,9 +466,15 @@ function IntelMapInner() {
     setRouteDrawMode(false); setDrawingPoints([])
     setActiveMidpoint('All')
     setSelectedRouteId(null)
-    setNaturalAspect(null)
+    setNaturalAspect(1)
     setContainerDims(null)
     void currentMap // suppress unused warning
+  }, [selectedMapId])
+
+  // ── effects: remember last viewed map for homepage quick resume
+  React.useEffect(() => {
+    if (typeof window === 'undefined' || !selectedMapId) return
+    localStorage.setItem('hll_last_map_id', selectedMapId)
   }, [selectedMapId])
 
   // ── effects: keep selectedSpot in sync with maps
@@ -608,25 +613,58 @@ function IntelMapInner() {
   // ── effects: load activity feed
   const loadFeed = React.useCallback(async () => {
     setFeedLoading(true)
-    const { data } = await supabase
-      .from('spot_history')
-      .select('id, spot_id, changed_by_name, changed_at, snapshot')
-      .order('changed_at', { ascending: false })
-      .limit(20)
-    const items = data || []
+    const { data, error } = await supabase
+      .from('spots')
+      .select('id, map_id, title, created_at, created_by_name, last_edited_at, last_edited_by_name')
+
+    if (error) {
+      console.error('Feed load error:', error)
+      setFeedItems([])
+      setFeedLoading(false)
+      return
+    }
+
+    const items = (data || [])
+      .map((row: any) => ({
+        id: Number(`${row.id}${String(row.last_edited_at || row.created_at || '').replace(/\D/g, '').slice(-6) || '0'}`),
+        spot_id: row.id,
+        changed_by_name: row.last_edited_by_name || row.created_by_name || 'Someone',
+        changed_at: row.last_edited_at || row.created_at,
+        snapshot: { title: row.title, map_id: row.map_id },
+      }))
+      .filter((item: any) => !!item.changed_at)
+      .sort((a: any, b: any) => new Date(b.changed_at).getTime() - new Date(a.changed_at).getTime())
+      .slice(0, 20)
+
     setFeedItems(items)
-    // Check if any items are newer than last seen
     if (items.length > 0) {
       const newest = items[0]?.changed_at ?? ''
       setFeedHasNew(newest > feedLastSeen)
+    } else {
+      setFeedHasNew(false)
     }
     setFeedLoading(false)
   }, [feedLastSeen])
 
   React.useEffect(() => {
-    const saved = localStorage.getItem('hll_show_activity')
-    if (saved === '0') setShowActivity(false)
-  }, [])
+    loadFeed()
+    const interval = setInterval(loadFeed, 60_000)
+    return () => clearInterval(interval)
+  }, [loadFeed])
+
+  // ── effects: realtime refresh for activity feed
+  React.useEffect(() => {
+    const channel = supabase
+      .channel('spots-feed-live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'spots' }, () => {
+        void loadFeed()
+      })
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [loadFeed])
 
   // ── effects: load comments when spot selected
   React.useEffect(() => {
@@ -908,6 +946,8 @@ function IntelMapInner() {
       if (error) throw error
       const saved = normalizeSpot(data)
       replaceSpotInMaps(tempId, saved); setSelectedSpot(saved)
+      await saveSpotHistory(saved)
+      await loadFeed()
       revokeUrls(newSpot.images)
     } catch (err: any) {
       console.error('Save error:', err)
@@ -976,6 +1016,30 @@ function IntelMapInner() {
     }).eq('id', selectedSpot.id)
 
     if (error) { console.error('Update error:', error); return }
+    const refreshedSpot: Spot = {
+      ...selectedSpot,
+      title: editSpot.title.trim(),
+      role: primaryRole,
+      roles: editSpot.roles,
+      side: normalizeSide(editSpot.side),
+      notes: editSpot.notes.trim(),
+      youtube: editSpot.youtube.trim() || null,
+      size: clampSpotSize(editSpot.size),
+      requiresBuildable: editSpot.requiresBuildable,
+      verified: editSpot.verified,
+      patchVersion: editSpot.patchVersion,
+      images: finalImages,
+      cones: cleanedCones,
+      fireLines: cleanedLines,
+      routes: cleanedRoutes,
+      lastEditedBy: userId,
+      lastEditedByName: userName,
+      lastEditedAt: new Date().toISOString(),
+    }
+    patchSpotInMaps(selectedSpot.id, refreshedSpot)
+    setSelectedSpot(refreshedSpot)
+    await saveSpotHistory(refreshedSpot)
+    await loadFeed()
     revokeUrls(editSpotNewPreviews)
     setEditSpotNewFiles([])
     setEditSpotNewPreviews([])
@@ -987,19 +1051,12 @@ function IntelMapInner() {
     const spotToDelete = selectedSpot
     // Cancel any existing undo toast
     if (undoToast) { clearTimeout(undoToast.timerId); setUndoToast(null) }
-    // Clear any in-progress route preview / selection so deleted routes do not linger on the map
-    setSelectedRouteId(null)
-    setRouteDrawMode(false)
-    setDrawingPoints([])
-    drawingPointsRef.current = []
-    lastSampledPointRef.current = null
-    isRouteDrawingRef.current = false
     // Optimistically remove from UI immediately
-    setSelectedSpot(null)
-    setEditingSpotId(null)
+    setSelectedSpot(null); setEditingSpotId(null)
     removeSpotFromMaps(spotToDelete.id)
     // Save history snapshot then start 6-second undo window
     saveSpotHistory(spotToDelete)
+    loadFeed()
     const timerId = setTimeout(async () => {
       const { error } = await supabase.from('spots').delete().eq('id', spotToDelete.id)
       if (error) {
@@ -1016,7 +1073,6 @@ function IntelMapInner() {
     clearTimeout(undoToast.timerId)
     addSpotToMaps(undoToast.spot)
     setSelectedSpot(undoToast.spot)
-    setSelectedRouteId(null)
     setUndoToast(null)
   }
 
@@ -1100,13 +1156,8 @@ function IntelMapInner() {
     setEditSpotNewFiles([])
     setEditSpotNewPreviews([])
     if (editFileInputRef.current) editFileInputRef.current.value = ''
-    setEditingSpotId(null)
-    resetPlacementState()
-    setRouteDrawMode(false)
-    setDrawingPoints([])
-    drawingPointsRef.current = []
-    lastSampledPointRef.current = null
-    isRouteDrawingRef.current = false
+    setEditingSpotId(null); resetPlacementState()
+    setRouteDrawMode(false); setDrawingPoints([])
   }
 
   const resetPlacementState = () => {
@@ -1166,17 +1217,12 @@ function IntelMapInner() {
   }
 
   // ── route management
-  const deleteRoute = async (routeId: string) => {
+  const deleteRoute = (routeId: string) => {
     const nextRoutes = editSpot.routes.filter((r) => r.id !== routeId)
     setEditSpot((p) => ({ ...p, routes: nextRoutes }))
     if (selectedSpot) {
       setSelectedSpot((p) => p ? { ...p, routes: nextRoutes } : p)
       patchSpotInMaps(selectedSpot.id, { routes: nextRoutes })
-      if (selectedRouteId === routeId) setSelectedRouteId(null)
-      if (typeof selectedSpot.id === 'number') {
-        const { error } = await supabase.from('spots').update({ routes: nextRoutes }).eq('id', selectedSpot.id)
-        if (error) console.error('Route delete error:', error)
-      }
     }
   }
 
@@ -1311,8 +1357,7 @@ function IntelMapInner() {
         </div>
 
         {/* ── Row 1: filters */}
-        <div ref={filterRow1Ref} className="sticky z-30 mb-2 rounded-[28px] border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.92),rgba(8,20,12,0.88))] p-4 shadow-[0_20px_60px_rgba(0,0,0,0.45)] backdrop-blur-xl"
-          style={{ top: `${row1Top}px` }}>
+        <div ref={filterRow1Ref} className="z-30 mb-2 rounded-[28px] border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.92),rgba(8,20,12,0.88))] p-4 shadow-[0_20px_60px_rgba(0,0,0,0.45)] backdrop-blur-xl">
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-8">
             {/* Map selector */}
             <div>
@@ -1397,8 +1442,7 @@ function IntelMapInner() {
         </div>
 
         {/* ── Row 2: layer toggles */}
-        <div ref={filterRow2Ref} className="sticky z-30 mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-[24px] border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.92),rgba(8,20,12,0.88))] px-4 py-3 shadow-[0_12px_40px_rgba(0,0,0,0.40)] backdrop-blur-xl"
-          style={{ top: `${row2Top}px` }}>
+        <div ref={filterRow2Ref} className="z-30 mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-[24px] border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.92),rgba(8,20,12,0.88))] px-4 py-3 shadow-[0_12px_40px_rgba(0,0,0,0.40)] backdrop-blur-xl">
           <span className="text-[10px] uppercase tracking-[0.30em] text-zinc-500">Layers</span>
           {/* Markers */}
           <button onClick={() => setShowMarkers((p) => !p)}
@@ -1469,108 +1513,13 @@ function IntelMapInner() {
           </div>
         </div>
 
-
         {/* ── Main grid */}
-        <div className="grid grid-cols-1 items-start gap-5 xl:grid-cols-[320px_minmax(0,1fr)_300px] 2xl:grid-cols-[340px_minmax(0,1fr)_320px]">
+        <div className="grid grid-cols-1 items-start gap-5 xl:grid-cols-[360px_minmax(0,1fr)_390px]">
 
-          {/* ── Left rail */}
-          <div className="space-y-5 xl:sticky xl:self-start" style={{ top: `${panelTop}px` }}>
-            <div className="flex justify-end">
-              <button
-                onClick={() => {
-                  const next = !showActivity
-                  setShowActivity(next)
-                  localStorage.setItem('hll_show_activity', next ? '1' : '0')
-                }}
-                className="rounded-xl border border-emerald-300/15 bg-emerald-900/35 px-3 py-1.5 text-[11px] font-medium text-zinc-300 transition hover:bg-emerald-800/55 hover:text-white"
-              >
-                {showActivity ? 'Hide Activity' : 'Show Activity'}
-              </button>
-            </div>
-
-            {showActivity && (
+          {/* ── Left side panel: selected spot replaces activity */}
+          <div className="xl:sticky xl:self-start" style={{ top: `${panelTop}px` }}>
+            {selectedSpot ? (
               <div className={`${panelClass} p-4`}>
-                {/* Header */}
-                <div className="mb-3 flex items-center justify-between">
-                  <span className="text-xs font-semibold uppercase tracking-[0.2em] text-zinc-300">Activity</span>
-                  <div className="flex items-center gap-2">
-                    {feedHasNew && (
-                      <span className="rounded-full border border-emerald-300/30 bg-emerald-600/60 px-2 py-0.5 text-[10px] text-emerald-100">
-                        New
-                      </span>
-                    )}
-                    <button onClick={loadFeed} disabled={feedLoading}
-                      className="text-zinc-600 hover:text-zinc-300 transition text-sm" title="Refresh">
-                      {feedLoading ? '…' : '↻'}
-                    </button>
-                  </div>
-                </div>
-
-                {/* Feed items */}
-                <div className="max-h-[72vh] overflow-y-auto space-y-px">
-                  {feedLoading && feedItems.length === 0 ? (
-                    <div className="py-4 text-center text-xs text-zinc-600">Loading...</div>
-                  ) : feedItems.length === 0 ? (
-                    <div className="py-4 text-center text-xs text-zinc-600">No changes yet.</div>
-                  ) : feedItems.map((item) => {
-                    const isNew      = feedLastSeen !== '' && item.changed_at > feedLastSeen
-                    const spotName   = item.snapshot?.title ?? `Spot #${item.spot_id}`
-                    const mapId      = item.snapshot?.map_id ?? ''
-                    const mapLabel   = maps.find((m) => m.id === mapId)?.name ?? mapId
-                    const date       = new Date(item.changed_at)
-                    const diffMs     = Date.now() - date.getTime()
-                    const diffMins   = Math.floor(diffMs / 60000)
-                    const diffHrs    = Math.floor(diffMins / 60)
-                    const timeStr    = diffMins < 1  ? 'just now'
-                      : diffMins < 60 ? `${diffMins}m ago`
-                      : diffHrs  < 24 ? `${diffHrs}h ago`
-                      : date.toLocaleDateString()
-
-                    return (
-                      <div key={item.id}
-                        className={`flex gap-2 rounded-xl px-2 py-2.5 transition-colors ${isNew ? 'bg-emerald-500/8' : 'hover:bg-emerald-900/20'}`}>
-                        <div className="mt-1.5 flex-shrink-0">
-                          {isNew
-                            ? <span className="block h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                            : <span className="block h-1.5 w-1.5 rounded-full bg-zinc-700" />}
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="text-[11px] leading-4 text-zinc-400">
-                            <span className="font-medium text-emerald-300">{item.changed_by_name || 'Someone'}</span>
-                            {' · '}
-                            <button
-                              onClick={() => {
-                                const targetMap = maps.find((m) => m.id === mapId)
-                                if (targetMap) {
-                                  setSelectedMapId(mapId)
-                                  const spot = targetMap.spots.find((s) => s.id === item.spot_id)
-                                  if (spot) setTimeout(() => selectSpot(spot), 80)
-                                }
-                              }}
-                              className="font-medium text-white hover:text-emerald-300 transition text-left">
-                              {spotName}
-                            </button>
-                          </div>
-                          {mapLabel && (
-                            <div className="mt-0.5 text-[10px] text-zinc-600">{mapLabel}</div>
-                          )}
-                          <div className="mt-0.5 text-[10px] text-zinc-700">{timeStr}</div>
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
-            )}
-
-            {/* ── Selected spot panel */}
-            {isDrawerOpen && selectedSpot && (
-              <div className={`${panelClass} overflow-hidden p-3 md:p-4`}>
-                <style>{`@keyframes slideInDrawer { from { opacity:0; transform:translateX(18px); } to { opacity:1; transform:translateX(0); } }`}</style>
-                <div
-                  className="mx-auto w-full max-w-[760px] rounded-[24px] border border-emerald-300/15 bg-emerald-950/22 p-4 sm:p-5"
-                  style={{ animation: 'slideInDrawer 0.22s cubic-bezier(0.4,0,0.2,1)' }}
-                >
               {/* Drawer header */}
               <div className="mb-3 flex items-center justify-between">
                 <span className="truncate pr-2 text-xs font-semibold text-white sm:text-sm">
@@ -1774,12 +1723,11 @@ function IntelMapInner() {
                     <>
                       <img src={selectedSpot.images[0]} alt={selectedSpot.title}
                         className="max-h-[420px] w-full cursor-pointer rounded-[18px] border border-zinc-800 bg-black/30 object-contain"
-                        style={{ filter: 'none', mixBlendMode: 'normal', opacity: 1, isolation: 'isolate' }}
                         onClick={() => openLightbox(selectedSpot.images || [], 0)} />
                       {selectedSpot.images.length > 1 && (
                         <div className="grid grid-cols-4 gap-1.5">
                           {selectedSpot.images.slice(1).map((img, idx) => (
-                            <img key={idx} src={img} alt="" className="h-12 w-full cursor-pointer rounded-xl border border-zinc-800 object-cover" style={{ filter: 'none', mixBlendMode: 'normal', opacity: 1, isolation: 'isolate' }} onClick={() => openLightbox(selectedSpot.images || [], idx + 1)} />
+                            <img key={idx} src={img} alt="" className="h-12 w-full cursor-pointer rounded-xl border border-zinc-800 object-cover" onClick={() => openLightbox(selectedSpot.images || [], idx + 1)} />
                           ))}
                         </div>
                       )}
@@ -1925,14 +1873,87 @@ function IntelMapInner() {
                   </div>
                 </div>
               )}
-            </div>
 
+              </div>
+            ) : (
+            <div className={`${panelClass} p-4`}>
+              {/* Header */}
+              <div className="mb-3 flex items-center justify-between">
+                <span className="text-xs font-semibold uppercase tracking-[0.2em] text-zinc-300">Activity</span>
+                <div className="flex items-center gap-2">
+                  {feedHasNew && (
+                    <span className="rounded-full border border-emerald-300/30 bg-emerald-600/60 px-2 py-0.5 text-[10px] text-emerald-100">
+                      New
+                    </span>
+                  )}
+                  <button onClick={loadFeed} disabled={feedLoading}
+                    className="text-zinc-600 hover:text-zinc-300 transition text-sm" title="Refresh">
+                    {feedLoading ? '…' : '↻'}
+                  </button>
                 </div>
+              </div>
+
+              {/* Feed items */}
+              <div className="max-h-[72vh] overflow-y-auto space-y-px">
+                {feedLoading && feedItems.length === 0 ? (
+                  <div className="py-4 text-center text-xs text-zinc-600">Loading...</div>
+                ) : feedItems.length === 0 ? (
+                  <div className="py-4 text-center text-xs text-zinc-600">No changes yet.</div>
+                ) : feedItems.map((item) => {
+                  const isNew      = feedLastSeen !== '' && item.changed_at > feedLastSeen
+                  const spotName   = item.snapshot?.title ?? `Spot #${item.spot_id}`
+                  const mapId      = item.snapshot?.map_id ?? ''
+                  const mapLabel   = maps.find((m) => m.id === mapId)?.name ?? mapId
+                  const date       = new Date(item.changed_at)
+                  const diffMs     = Date.now() - date.getTime()
+                  const diffMins   = Math.floor(diffMs / 60000)
+                  const diffHrs    = Math.floor(diffMins / 60)
+                  const timeStr    = diffMins < 1  ? 'just now'
+                    : diffMins < 60 ? `${diffMins}m ago`
+                    : diffHrs  < 24 ? `${diffHrs}h ago`
+                    : date.toLocaleDateString()
+
+                  return (
+                    <div key={item.id}
+                      className={`flex gap-2 rounded-xl px-2 py-2.5 transition-colors ${isNew ? 'bg-emerald-500/8' : 'hover:bg-emerald-900/20'}`}>
+                      <div className="mt-1.5 flex-shrink-0">
+                        {isNew
+                          ? <span className="block h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                          : <span className="block h-1.5 w-1.5 rounded-full bg-zinc-700" />}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[11px] leading-4 text-zinc-400">
+                          <span className="font-medium text-emerald-300">{item.changed_by_name || 'Someone'}</span>
+                          {' · '}
+                          <button
+                            onClick={() => {
+                              // Switch to the right map and open the spot
+                              const targetMap = maps.find((m) => m.id === mapId)
+                              if (targetMap) {
+                                setSelectedMapId(mapId)
+                                const spot = targetMap.spots.find((s) => s.id === item.spot_id)
+                                if (spot) setTimeout(() => selectSpot(spot), 80)
+                              }
+                            }}
+                            className="font-medium text-white hover:text-emerald-300 transition text-left">
+                            {spotName}
+                          </button>
+                        </div>
+                        {mapLabel && (
+                          <div className="mt-0.5 text-[10px] text-zinc-600">{mapLabel}</div>
+                        )}
+                        <div className="mt-0.5 text-[10px] text-zinc-700">{timeStr}</div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
             )}
           </div>
 
           {/* ── Map panel */}
-          <div className={`${panelClass} min-w-0 p-4 md:p-5`}>
+          <div className={`${panelClass} p-4 md:p-5`}>
             <div className="mb-4 flex flex-wrap items-start justify-between gap-4">
               <div>
                 <h2 className="text-xl font-semibold text-white">
@@ -2001,16 +2022,10 @@ function IntelMapInner() {
               {/* Map content — BOTH width and height are set in JS so the container always
                    exactly matches the image's native aspect ratio on every monitor.
                    mx-auto centers it when height-constrained (container narrower than parent). */}
-              <div
-                ref={mapContainerRef}
-                className="relative mx-auto w-full overflow-hidden rounded-[22px] bg-black/30"
+              <div ref={mapContainerRef} className="relative mx-auto bg-black/30"
                 style={{
-                  width: containerDims ? `${containerDims.w}px` : '100%',
-                  height: containerDims ? `${containerDims.h}px` : 'auto',
-                  aspectRatio: containerDims
-                    ? undefined
-                    : (naturalAspect ?? (mapOrientation === 'vertical' ? 0.72 : 1.45)),
-                  maxHeight: '78vh',
+                  width:  containerDims ? `${containerDims.w}px` : '100%',
+                  height: containerDims ? `${containerDims.h}px` : '56.25vw',
                 }}>
                 {selectedMap ? (
                   <div className={`absolute inset-0 ${mapCursor}`}
@@ -2020,9 +2035,8 @@ function IntelMapInner() {
 
                     {/* Map image — onLoad captures natural dimensions so ResizeObserver can
                          compute the exact container height, eliminating any letterboxing */}
-                    <img key={selectedMap.id} src={selectedMap.image} alt={selectedMap.name}
-                      className="pointer-events-none absolute inset-0 h-full w-full object-fill transition-opacity duration-150" draggable={false}
-                      style={{ opacity: naturalAspect ? 1 : 0 }}
+                    <img src={selectedMap.image} alt={selectedMap.name}
+                      className="pointer-events-none absolute inset-0 h-full w-full object-fill" draggable={false}
                       onLoad={(e) => {
                         const { naturalWidth: nw, naturalHeight: nh } = e.currentTarget
                         if (nw && nh) setNaturalAspect(nw / nh)
@@ -2204,7 +2218,7 @@ function IntelMapInner() {
           </div>
 
           {/* ── Right panel — spot list */}
-          <div className="xl:sticky xl:self-start xl:w-[300px] 2xl:w-[320px]" style={{ top: `${panelTop}px` }}>
+          <div className="xl:sticky xl:self-start xl:w-[360px] 2xl:w-[380px]" style={{ top: `${panelTop}px` }}>
             <div className={`${panelClass} p-4 md:p-5`}>
 
               {/* Header */}
@@ -2390,6 +2404,7 @@ function IntelMapInner() {
         </div>
       </div>
 
+
       {/* ── Undo delete toast */}
       {undoToast && (
         <div className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 flex items-center gap-3 rounded-2xl border border-red-500/30 bg-[rgba(20,5,5,0.95)] px-5 py-3 shadow-[0_8px_32px_rgba(0,0,0,0.6)] backdrop-blur-xl"
@@ -2409,7 +2424,8 @@ function IntelMapInner() {
       {lightboxIndex !== null && lightboxImages[lightboxIndex] && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-6"
           onClick={closeLightbox}>
-          <div className="relative flex max-h-[90vh] max-w-[95vw] items-center justify-center" onClick={(e) => e.stopPropagation()}>
+          <div className="relative flex max-h-[90vh] max-w-[95vw] items-center justify-center"
+            onClick={(e) => e.stopPropagation()}>
             {lightboxImages.length > 1 && (
               <button
                 onClick={showPrevLightboxImage}
@@ -2419,10 +2435,17 @@ function IntelMapInner() {
                 ‹
               </button>
             )}
-            <button onClick={closeLightbox}
-              className="absolute right-2 top-2 z-10 rounded-full bg-black/70 px-3 py-1 text-sm text-white">✕</button>
+
+            <button
+              onClick={closeLightbox}
+              className="absolute right-2 top-2 z-10 rounded-full bg-black/70 px-3 py-1 text-sm text-white hover:bg-black/90"
+            >
+              ✕
+            </button>
+
             <img src={lightboxImages[lightboxIndex]} alt="Enlarged"
               className="max-h-[90vh] max-w-[90vw] rounded-2xl object-contain" />
+
             {lightboxImages.length > 1 && (
               <button
                 onClick={showNextLightboxImage}
@@ -2432,6 +2455,7 @@ function IntelMapInner() {
                 ›
               </button>
             )}
+
             {lightboxImages.length > 1 && (
               <div className="absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-black/70 px-3 py-1 text-xs text-white">
                 {lightboxIndex + 1} / {lightboxImages.length}
