@@ -249,7 +249,8 @@ function IntelMapInner() {
   })
 
   // ── lightbox
-  const [lightboxImage, setLightboxImage] = React.useState<string | null>(null)
+  const [lightboxImages, setLightboxImages] = React.useState<string[]>([])
+  const [lightboxIndex, setLightboxIndex] = React.useState<number | null>(null)
 
   // ── refs
   const viewportRef      = React.useRef<HTMLDivElement | null>(null) // outer overflow div (wheel events)
@@ -1244,6 +1245,47 @@ function IntelMapInner() {
   const selectedRoute      = selectedSpot?.routes?.find((r) => r.id === selectedRouteId) || null
   const selectedRouteEmbed = getYouTubeEmbedUrl(selectedRoute?.youtube)
 
+  const openLightbox = (images: string[], startIndex: number) => {
+    if (!images.length) return
+    const safeIndex = Math.max(0, Math.min(startIndex, images.length - 1))
+    setLightboxImages(images)
+    setLightboxIndex(safeIndex)
+  }
+
+  const closeLightbox = () => {
+    setLightboxIndex(null)
+    setLightboxImages([])
+  }
+
+  const showPrevLightboxImage = () => {
+    if (lightboxIndex === null || lightboxImages.length === 0) return
+    setLightboxIndex((prev) => {
+      if (prev === null) return prev
+      return prev === 0 ? lightboxImages.length - 1 : prev - 1
+    })
+  }
+
+  const showNextLightboxImage = () => {
+    if (lightboxIndex === null || lightboxImages.length === 0) return
+    setLightboxIndex((prev) => {
+      if (prev === null) return prev
+      return prev === lightboxImages.length - 1 ? 0 : prev + 1
+    })
+  }
+
+  React.useEffect(() => {
+    if (lightboxIndex === null) return
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowLeft') showPrevLightboxImage()
+      if (e.key === 'ArrowRight') showNextLightboxImage()
+      if (e.key === 'Escape') closeLightbox()
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [lightboxIndex, lightboxImages])
+
   // ── cursor style for map
   const mapCursor = (draggingSpotId !== null || draggingSnipeSide !== null) ? 'cursor-grabbing'
     : isDragging ? 'cursor-grabbing'
@@ -1732,11 +1774,12 @@ function IntelMapInner() {
                     <>
                       <img src={selectedSpot.images[0]} alt={selectedSpot.title}
                         className="max-h-[420px] w-full cursor-pointer rounded-[18px] border border-zinc-800 bg-black/30 object-contain"
-                        onClick={() => setLightboxImage(selectedSpot.images![0])} />
+                        style={{ filter: 'none', mixBlendMode: 'normal', opacity: 1, isolation: 'isolate' }}
+                        onClick={() => openLightbox(selectedSpot.images || [], 0)} />
                       {selectedSpot.images.length > 1 && (
                         <div className="grid grid-cols-4 gap-1.5">
                           {selectedSpot.images.slice(1).map((img, idx) => (
-                            <img key={idx} src={img} alt="" className="h-12 w-full cursor-pointer rounded-xl border border-zinc-800 object-cover" onClick={() => setLightboxImage(img)} />
+                            <img key={idx} src={img} alt="" className="h-12 w-full cursor-pointer rounded-xl border border-zinc-800 object-cover" style={{ filter: 'none', mixBlendMode: 'normal', opacity: 1, isolation: 'isolate' }} onClick={() => openLightbox(selectedSpot.images || [], idx + 1)} />
                           ))}
                         </div>
                       )}
@@ -2363,14 +2406,37 @@ function IntelMapInner() {
       )}
 
       {/* Lightbox */}
-      {lightboxImage && (
+      {lightboxIndex !== null && lightboxImages[lightboxIndex] && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-6"
-          onClick={() => setLightboxImage(null)}>
-          <div className="relative max-h-[90vh] max-w-[90vw]">
-            <button onClick={() => setLightboxImage(null)}
+          onClick={closeLightbox}>
+          <div className="relative flex max-h-[90vh] max-w-[95vw] items-center justify-center" onClick={(e) => e.stopPropagation()}>
+            {lightboxImages.length > 1 && (
+              <button
+                onClick={showPrevLightboxImage}
+                className="absolute left-2 top-1/2 z-10 -translate-y-1/2 rounded-full bg-black/70 px-3 py-2 text-lg text-white hover:bg-black/90"
+                aria-label="Previous image"
+              >
+                ‹
+              </button>
+            )}
+            <button onClick={closeLightbox}
               className="absolute right-2 top-2 z-10 rounded-full bg-black/70 px-3 py-1 text-sm text-white">✕</button>
-            <img src={lightboxImage} alt="Enlarged"
+            <img src={lightboxImages[lightboxIndex]} alt="Enlarged"
               className="max-h-[90vh] max-w-[90vw] rounded-2xl object-contain" />
+            {lightboxImages.length > 1 && (
+              <button
+                onClick={showNextLightboxImage}
+                className="absolute right-2 top-1/2 z-10 -translate-y-1/2 rounded-full bg-black/70 px-3 py-2 text-lg text-white hover:bg-black/90"
+                aria-label="Next image"
+              >
+                ›
+              </button>
+            )}
+            {lightboxImages.length > 1 && (
+              <div className="absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-black/70 px-3 py-1 text-xs text-white">
+                {lightboxIndex + 1} / {lightboxImages.length}
+              </div>
+            )}
           </div>
         </div>
       )}

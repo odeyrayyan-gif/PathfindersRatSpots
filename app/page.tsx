@@ -16,7 +16,7 @@ type MapSummary = {
 }
 
 type FeedItem = {
-  id: number
+  id: string
   spot_id: number
   spot_title: string
   map_id: string
@@ -26,14 +26,14 @@ type FeedItem = {
 }
 
 function timeAgo(dateStr: string): string {
-  const diff  = Date.now() - new Date(dateStr).getTime()
-  const mins  = Math.floor(diff / 60000)
+  const diff = Date.now() - new Date(dateStr).getTime()
+  const mins = Math.floor(diff / 60000)
   const hours = Math.floor(mins / 60)
-  const days  = Math.floor(hours / 24)
-  if (mins  < 1)  return 'just now'
-  if (mins  < 60) return `${mins}m ago`
+  const days = Math.floor(hours / 24)
+  if (mins < 1) return 'just now'
+  if (mins < 60) return `${mins}m ago`
   if (hours < 24) return `${hours}h ago`
-  if (days  < 7)  return `${days}d ago`
+  if (days < 7) return `${days}d ago`
   return new Date(dateStr).toLocaleDateString()
 }
 
@@ -45,97 +45,110 @@ function getPreviewImagePath(imagePath: string): string {
   return `${match[1]}-preview${match[2]}`
 }
 
-
 export default function HomePage() {
   const { data: session } = useSession()
   const router = useRouter()
-  const userName  = session?.user?.name ?? ''
-  const userRole  = (session?.user as any)?.role ?? 'viewer'
+  const userName = session?.user?.name ?? ''
+  const userRole = (session?.user as any)?.role ?? 'viewer'
 
-  const [maps,        setMaps]        = React.useState<MapSummary[]>([])
-  const [feed,        setFeed]        = React.useState<FeedItem[]>([])
-  const [loading,       setLoading]       = React.useState(true)
-  const [feedLoading,   setFeedLoading]   = React.useState(true)
+  const [maps, setMaps] = React.useState<MapSummary[]>([])
+  const [feed, setFeed] = React.useState<FeedItem[]>([])
+  const [loading, setLoading] = React.useState(true)
+  const [feedLoading, setFeedLoading] = React.useState(true)
   const [enteringMapId, setEnteringMapId] = React.useState<string | null>(null)
-  const [, forceRender] = React.useReducer(x => x + 1, 0)
+  const [lastViewedMapId, setLastViewedMapId] = React.useState<string | null>(null)
+  const [, forceRender] = React.useReducer((x) => x + 1, 0)
 
-  // Re-render every minute so timestamps stay fresh
   React.useEffect(() => {
     const t = setInterval(forceRender, 60_000)
     return () => clearInterval(t)
   }, [])
 
   React.useEffect(() => {
-    async function load() {
-      setLoading(true)
-      const [{ data: mapsData }, { data: spotsData }] = await Promise.all([
-        supabase.from('maps').select('id, name, image').order('name'),
-        supabase.from('spots').select('map_id, created_at').order('created_at', { ascending: false }),
-      ])
+    if (typeof window === 'undefined') return
+    const stored = localStorage.getItem('hll_last_map_id')
+    if (stored) setLastViewedMapId(stored)
+  }, [])
 
-      const spotsByMap: Record<string, { count: number }> = {}
-      for (const s of spotsData || []) {
-        if (!spotsByMap[s.map_id]) spotsByMap[s.map_id] = { count: 0 }
-        spotsByMap[s.map_id].count++
+  const loadMapsAndFeed = React.useCallback(async () => {
+    setLoading(true)
+    setFeedLoading(true)
+
+    const [{ data: mapsData }, { data: spotsData }] = await Promise.all([
+      supabase.from('maps').select('id, name, image').order('name'),
+      supabase
+        .from('spots')
+        .select('id, title, map_id, created_at, created_by_name, last_edited_at, last_edited_by_name')
+        .order('created_at', { ascending: false }),
+    ])
+
+    const mapNames: Record<string, string> = {}
+    for (const m of mapsData || []) mapNames[m.id] = m.name
+
+    const spotsByMap: Record<string, { count: number; lastAt: string | null; lastBy: string | null }> = {}
+    const feedItems: FeedItem[] = []
+
+    for (const s of spotsData || []) {
+      const changedAt = s.last_edited_at || s.created_at || null
+      const changedBy = s.last_edited_by_name || s.created_by_name || 'Someone'
+
+      if (!spotsByMap[s.map_id]) {
+        spotsByMap[s.map_id] = { count: 0, lastAt: null, lastBy: null }
+      }
+      spotsByMap[s.map_id].count++
+
+      if (changedAt && (!spotsByMap[s.map_id].lastAt || changedAt > spotsByMap[s.map_id].lastAt!)) {
+        spotsByMap[s.map_id].lastAt = changedAt
+        spotsByMap[s.map_id].lastBy = changedBy
       }
 
-      // Get last activity per map from spot_history
-      const { data: historyData } = await supabase
-        .from('spot_history')
-        .select('snapshot, changed_by_name, changed_at')
-        .order('changed_at', { ascending: false })
-        .limit(100)
-
-      const lastActivityByMap: Record<string, { at: string; by: string }> = {}
-      for (const h of historyData || []) {
-        const mapId = h.snapshot?.map_id
-        if (mapId && !lastActivityByMap[mapId]) {
-          lastActivityByMap[mapId] = { at: h.changed_at, by: h.changed_by_name }
-        }
+      if (changedAt) {
+        feedItems.push({
+          id: `${s.id}-${changedAt}`,
+          spot_id: s.id,
+          spot_title: s.title || `Spot #${s.id}`,
+          map_id: s.map_id,
+          map_name: mapNames[s.map_id] || s.map_id,
+          changed_by_name: changedBy,
+          changed_at: changedAt,
+        })
       }
-
-      const summaries: MapSummary[] = (mapsData || []).map((m) => ({
-        id:             m.id,
-        name:           m.name,
-        image:          m.image,
-        previewImage:   getPreviewImagePath(m.image),
-        spotCount:      spotsByMap[m.id]?.count ?? 0,
-        lastActivity:   lastActivityByMap[m.id]?.at ?? null,
-        lastActivityBy: lastActivityByMap[m.id]?.by ?? null,
-      }))
-
-      setMaps(summaries)
-      setLoading(false)
     }
-    load()
+
+    feedItems.sort((a, b) => (a.changed_at < b.changed_at ? 1 : -1))
+
+    const summaries: MapSummary[] = (mapsData || []).map((m) => ({
+      id: m.id,
+      name: m.name,
+      image: m.image,
+      previewImage: getPreviewImagePath(m.image),
+      spotCount: spotsByMap[m.id]?.count ?? 0,
+      lastActivity: spotsByMap[m.id]?.lastAt ?? null,
+      lastActivityBy: spotsByMap[m.id]?.lastBy ?? null,
+    }))
+
+    setMaps(summaries)
+    setFeed(feedItems.slice(0, 30))
+    setLoading(false)
+    setFeedLoading(false)
   }, [])
 
   React.useEffect(() => {
-    async function loadFeed() {
-      setFeedLoading(true)
-      const { data } = await supabase
-        .from('spot_history')
-        .select('id, spot_id, snapshot, changed_by_name, changed_at')
-        .order('changed_at', { ascending: false })
-        .limit(30)
+    void loadMapsAndFeed()
+  }, [loadMapsAndFeed])
 
-      const { data: mapsData } = await supabase.from('maps').select('id, name')
-      const mapNames: Record<string, string> = {}
-      for (const m of mapsData || []) mapNames[m.id] = m.name
+  React.useEffect(() => {
+    const channel = supabase
+      .channel('home-spots-live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'spots' }, () => {
+        void loadMapsAndFeed()
+      })
+      .subscribe()
 
-      setFeed((data || []).map((h) => ({
-        id:             h.id,
-        spot_id:        h.spot_id,
-        spot_title:     h.snapshot?.title ?? `Spot #${h.spot_id}`,
-        map_id:         h.snapshot?.map_id ?? '',
-        map_name:       mapNames[h.snapshot?.map_id] ?? h.snapshot?.map_id ?? '',
-        changed_by_name: h.changed_by_name || 'Someone',
-        changed_at:     h.changed_at,
-      })))
-      setFeedLoading(false)
+    return () => {
+      supabase.removeChannel(channel)
     }
-    loadFeed()
-  }, [])
+  }, [loadMapsAndFeed])
 
   const goToMap = (mapId?: string) => {
     if (!mapId) {
@@ -143,6 +156,8 @@ export default function HomePage() {
       return
     }
 
+    if (typeof window !== 'undefined') localStorage.setItem('hll_last_map_id', mapId)
+    setLastViewedMapId(mapId)
     setEnteringMapId(mapId)
     window.setTimeout(() => {
       router.push(`/map?map=${encodeURIComponent(mapId)}`)
@@ -150,8 +165,12 @@ export default function HomePage() {
   }
 
   const goToSpot = (mapId: string, spotId: number) => {
+    if (typeof window !== 'undefined') localStorage.setItem('hll_last_map_id', mapId)
+    setLastViewedMapId(mapId)
     router.push(`/map?map=${encodeURIComponent(mapId)}&spot=${spotId}`)
   }
+
+  const lastViewedMap = maps.find((m) => m.id === lastViewedMapId) || null
 
   return (
     <div
@@ -159,8 +178,6 @@ export default function HomePage() {
         enteringMapId ? 'opacity-95' : 'opacity-100'
       }`}
     >
-
-      {/* Top bar */}
       <div className="border-b border-emerald-400/10 bg-[rgba(8,18,10,0.85)] backdrop-blur-xl">
         <div className="mx-auto flex max-w-[1400px] items-center justify-between px-6 py-4">
           <div className="flex items-center gap-4">
@@ -182,8 +199,10 @@ export default function HomePage() {
                 Admin
               </a>
             )}
-            <button onClick={() => signOut({ callbackUrl: '/signin' })}
-              className="rounded-xl border border-zinc-700/50 bg-zinc-900/50 px-3 py-1.5 text-xs text-zinc-400 transition hover:text-white">
+            <button
+              onClick={() => signOut({ callbackUrl: '/signin' })}
+              className="rounded-xl border border-zinc-700/50 bg-zinc-900/50 px-3 py-1.5 text-xs text-zinc-400 transition hover:text-white"
+            >
               Sign Out
             </button>
           </div>
@@ -191,8 +210,6 @@ export default function HomePage() {
       </div>
 
       <div className="mx-auto max-w-[1400px] px-6 py-10">
-
-        {/* Hero */}
         <div className="mb-10">
           <h1 className="text-3xl font-bold tracking-tight text-white sm:text-4xl">
             {userName ? `Welcome back, ${userName.split(' ')[0]}.` : 'Welcome back.'}
@@ -200,100 +217,104 @@ export default function HomePage() {
           <p className="mt-2 text-zinc-500">Select a map to start, or review recent activity below.</p>
         </div>
 
+        {lastViewedMap && (
+          <button
+            onClick={() => goToMap(lastViewedMap.id)}
+            className="mb-8 flex w-full items-center justify-between rounded-[24px] border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.92),rgba(8,20,12,0.88))] px-5 py-4 text-left shadow-[0_20px_60px_rgba(0,0,0,0.25)] transition hover:border-emerald-300/30 hover:bg-emerald-900/35"
+          >
+            <div>
+              <div className="text-[10px] uppercase tracking-[0.32em] text-zinc-500">Last viewed map</div>
+              <div className="mt-1 text-lg font-semibold text-white">{lastViewedMap.name}</div>
+              <div className="mt-1 text-xs text-zinc-500">
+                {lastViewedMap.lastActivity
+                  ? `Last activity ${timeAgo(lastViewedMap.lastActivity)}${lastViewedMap.lastActivityBy ? ` · ${lastViewedMap.lastActivityBy}` : ''}`
+                  : `${lastViewedMap.spotCount} spot${lastViewedMap.spotCount !== 1 ? 's' : ''}`}
+              </div>
+            </div>
+            <div className="rounded-xl border border-emerald-300/20 bg-emerald-900/30 px-3 py-2 text-xs font-medium text-emerald-200">
+              Open →
+            </div>
+          </button>
+        )}
+
         <div className="grid gap-8 xl:grid-cols-[1fr_340px]">
-
-          {/* Left — map cards */}
-<div>
-  <div className="mb-5 flex items-center justify-between">
-    <h2 className="text-xs font-semibold uppercase tracking-[0.3em] text-zinc-500">Maps</h2>
-    <span className="text-xs text-zinc-700">{maps.length} maps</span>
-  </div>
-
-  {loading ? (
-    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-      {[...Array(6)].map((_, i) => (
-        <div key={i} className="h-48 animate-pulse rounded-[20px] bg-emerald-950/30" />
-      ))}
-    </div>
-  ) : (
-    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-      {maps.map((map) => (
-        <button
-          key={map.id}
-          onClick={() => goToMap(map.id)}
-          className={`group relative overflow-hidden rounded-[20px] border border-emerald-400/10 bg-emerald-950/20 text-left transition-all duration-300 hover:-translate-y-0.5 hover:border-emerald-300/25 hover:shadow-[0_8px_32px_rgba(0,0,0,0.4)] active:scale-[0.985] ${
-            enteringMapId === map.id
-              ? 'z-20 scale-[1.04] border-emerald-300/35 ring-1 ring-emerald-300/20 shadow-[0_12px_40px_rgba(16,185,129,0.22)]'
-              : ''
-          }`}
-        >
-          {enteringMapId === map.id && (
-            <div className="absolute inset-0 z-10 bg-emerald-500/10 backdrop-blur-[1px]" />
-          )}
-
-          <div className="relative h-32 w-full overflow-hidden">
-            <img
-              src={map.previewImage}
-              alt={map.name}
-              className={`h-full w-full object-cover transition-transform duration-700 ease-out ${
-                enteringMapId === map.id ? 'scale-[1.03]' : 'group-hover:scale-[1.08]'
-               
-              }`}
-              onError={(e) => {
-                e.currentTarget.src = map.image
-                
-              }}
-            />
-
-            <div className="absolute inset-0 bg-gradient-to-t from-[rgba(5,12,7,0.85)] via-[rgba(5,12,7,0.2)] to-transparent" />
-            <div className="absolute inset-0 flex items-end p-3 opacity-0 transition-opacity duration-300 group-hover:opacity-100">
-  <div className="w-full rounded-lg bg-black/60 backdrop-blur-md px-3 py-2 text-xs text-white">
-    <div className="flex items-center justify-between">
-      <span>{map.spotCount} spots</span>
-
-      {map.lastActivity && (
-        <span className="text-emerald-300">
-          {timeAgo(map.lastActivity)}
-        </span>
-      )}
-    </div>
-  </div>
-</div>
-
-            <div className="absolute right-3 top-3 rounded-xl border border-emerald-300/20 bg-[rgba(5,12,7,0.8)] px-2.5 py-1 text-xs font-medium text-emerald-300 backdrop-blur-sm">
-              {map.spotCount} spot{map.spotCount !== 1 ? 's' : ''}
-            </div>
-          </div>
-
-          <div className="p-4">
-            <div className="font-semibold text-white transition-colors group-hover:text-emerald-100">
-              {map.name}
+          <div>
+            <div className="mb-5 flex items-center justify-between">
+              <h2 className="text-xs font-semibold uppercase tracking-[0.3em] text-zinc-500">Maps</h2>
+              <span className="text-xs text-zinc-700">{maps.length} maps</span>
             </div>
 
-            {map.lastActivity ? (
-              <div className="mt-1.5 text-[11px] text-zinc-600">
-                Last edit {timeAgo(map.lastActivity)}
-                {map.lastActivityBy && <span> · {map.lastActivityBy}</span>}
+            {loading ? (
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                {[...Array(6)].map((_, i) => (
+                  <div key={i} className="h-48 animate-pulse rounded-[20px] bg-emerald-950/30" />
+                ))}
               </div>
             ) : (
-              <div className="mt-1.5 text-[11px] text-zinc-700">No activity yet</div>
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                {maps.map((map) => (
+                  <button
+                    key={map.id}
+                    onClick={() => goToMap(map.id)}
+                    className={`group relative overflow-hidden rounded-[20px] border border-emerald-400/10 bg-emerald-950/20 text-left transition-all duration-300 hover:-translate-y-0.5 hover:border-emerald-300/25 hover:shadow-[0_8px_32px_rgba(0,0,0,0.4)] active:scale-[0.985] ${
+                      enteringMapId === map.id
+                        ? 'z-20 scale-[1.04] border-emerald-300/35 ring-1 ring-emerald-300/20 shadow-[0_12px_40px_rgba(16,185,129,0.22)]'
+                        : ''
+                    }`}
+                  >
+                    {enteringMapId === map.id && <div className="absolute inset-0 z-10 bg-emerald-500/10 backdrop-blur-[1px]" />}
+
+                    <div className="relative h-32 w-full overflow-hidden">
+                      <img
+                        src={map.previewImage}
+                        alt={map.name}
+                        className={`h-full w-full object-cover transition-transform duration-700 ease-out ${
+                          enteringMapId === map.id ? 'scale-[1.03]' : 'group-hover:scale-[1.08]'
+                        }`}
+                        onError={(e) => {
+                          e.currentTarget.src = map.image
+                        }}
+                      />
+
+                      <div className="absolute inset-0 bg-gradient-to-t from-[rgba(5,12,7,0.85)] via-[rgba(5,12,7,0.2)] to-transparent" />
+                      <div className="absolute inset-0 flex items-end p-3 opacity-0 transition-opacity duration-300 group-hover:opacity-100">
+                        <div className="w-full rounded-lg bg-black/60 backdrop-blur-md px-3 py-2 text-xs text-white">
+                          <div className="flex items-center justify-between">
+                            <span>{map.spotCount} spots</span>
+                            {map.lastActivity && <span className="text-emerald-300">{timeAgo(map.lastActivity)}</span>}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="absolute right-3 top-3 rounded-xl border border-emerald-300/20 bg-[rgba(5,12,7,0.8)] px-2.5 py-1 text-xs font-medium text-emerald-300 backdrop-blur-sm">
+                        {map.spotCount} spot{map.spotCount !== 1 ? 's' : ''}
+                      </div>
+                    </div>
+
+                    <div className="p-4">
+                      <div className="font-semibold text-white transition-colors group-hover:text-emerald-100">{map.name}</div>
+
+                      {map.lastActivity ? (
+                        <div className="mt-1.5 text-[11px] text-zinc-600">
+                          Last edit {timeAgo(map.lastActivity)}
+                          {map.lastActivityBy && <span> · {map.lastActivityBy}</span>}
+                        </div>
+                      ) : (
+                        <div className="mt-1.5 text-[11px] text-zinc-700">No activity yet</div>
+                      )}
+                    </div>
+
+                    <div className="absolute bottom-4 right-4 text-zinc-700 transition-all duration-200 group-hover:text-emerald-400">
+                      <span className="inline-block transition-transform duration-200 group-hover:translate-x-1">→</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
             )}
           </div>
 
-          <div className="absolute bottom-4 right-4 text-zinc-700 transition-all duration-200 group-hover:text-emerald-400">
-            <span className="inline-block transition-transform duration-200 group-hover:translate-x-1">
-              →
-            </span>
-          </div>
-        </button>
-      ))}
-    </div>
-  )}
-</div>
-          {/* Right — activity feed */}
           <div className="xl:sticky xl:self-start" style={{ top: '24px' }}>
             <div className="rounded-[24px] border border-emerald-400/12 bg-[linear-gradient(180deg,rgba(18,52,29,0.7),rgba(11,28,16,0.85))] p-5 shadow-[0_20px_60px_rgba(0,0,0,0.3)]">
-
               <div className="mb-4 flex items-center justify-between">
                 <h2 className="text-xs font-semibold uppercase tracking-[0.3em] text-zinc-500">Recent Activity</h2>
                 <span className="text-[10px] text-zinc-700">{feed.length} changes</span>
@@ -310,9 +331,10 @@ export default function HomePage() {
               ) : (
                 <div className="max-h-[70vh] overflow-y-auto space-y-px pr-0.5">
                   {feed.map((item, i) => (
-                    <div key={item.id}
-                      className={`flex gap-3 rounded-xl px-2 py-2.5 transition-colors hover:bg-emerald-900/20 ${i === 0 ? 'bg-emerald-500/6' : ''}`}>
-                      {/* Dot */}
+                    <div
+                      key={item.id}
+                      className={`flex gap-3 rounded-xl px-2 py-2.5 transition-colors hover:bg-emerald-900/20 ${i === 0 ? 'bg-emerald-500/6' : ''}`}
+                    >
                       <div className="mt-1.5 flex-shrink-0">
                         <span className={`block h-1.5 w-1.5 rounded-full ${i < 3 ? 'bg-emerald-400' : 'bg-zinc-700'}`} />
                       </div>
@@ -322,13 +344,13 @@ export default function HomePage() {
                           {' edited '}
                           <button
                             onClick={() => goToSpot(item.map_id, item.spot_id)}
-                            className="font-medium text-white hover:text-emerald-300 transition">
+                            className="font-medium text-white hover:text-emerald-300 transition"
+                          >
                             {item.spot_title}
                           </button>
                         </div>
                         <div className="mt-0.5 flex items-center gap-2">
-                          <button onClick={() => goToMap(item.map_id)}
-                            className="text-[10px] text-zinc-600 hover:text-zinc-400 transition">
+                          <button onClick={() => goToMap(item.map_id)} className="text-[10px] text-zinc-600 hover:text-zinc-400 transition">
                             {item.map_name}
                           </button>
                           <span className="text-zinc-800">·</span>
@@ -341,7 +363,6 @@ export default function HomePage() {
               )}
             </div>
           </div>
-
         </div>
       </div>
     </div>
