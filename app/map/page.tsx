@@ -145,10 +145,7 @@ function IntelMapInner() {
     return localStorage.getItem('hll_feed_last_seen') ?? ''
   })
   const [feedHasNew,     setFeedHasNew]     = React.useState(false)
-  const [showActivity,  setShowActivity]    = React.useState<boolean>(() => {
-    if (typeof window === 'undefined') return true
-    return localStorage.getItem('hll_show_activity') !== '0'
-  })
+  const [showActivity, setShowActivity] = React.useState(true)
 
   // ── list filter state
   const [roleFilters,     setRoleFilters]     = React.useState<Set<string>>(new Set())  // empty = all
@@ -626,12 +623,9 @@ function IntelMapInner() {
   }, [feedLastSeen])
 
   React.useEffect(() => {
-    loadFeed()
-    // Refresh feed every 60 seconds
-    const interval = setInterval(loadFeed, 60_000)
-    return () => clearInterval(interval)
-  }, [loadFeed])
-
+    const saved = localStorage.getItem('hll_show_activity')
+    if (saved === '0') setShowActivity(false)
+  }, [])
 
   // ── effects: load comments when spot selected
   React.useEffect(() => {
@@ -885,7 +879,7 @@ function IntelMapInner() {
     const optimistic: Spot = {
       id: tempId, map_id: selectedMapId,
       title: newSpot.title.trim(), role: primaryRole, roles: newSpot.roles,
-      side: newSpot.side, notes: newSpot.notes, youtube: newSpot.youtube.trim() || null,
+      side: normalizeSide(newSpot.side), notes: newSpot.notes, youtube: newSpot.youtube.trim() || null,
       images: newSpot.images, x: pendingPlacement.x, y: pendingPlacement.y,
       size: clampSpotSize(newSpot.size), requiresBuildable: newSpot.requiresBuildable,
       verified: newSpot.verified, patchVersion: newSpot.patchVersion,
@@ -902,7 +896,7 @@ function IntelMapInner() {
       const uploadedUrls = await Promise.all(newSpot.imageFiles.map(uploadImage))
       const { data, error } = await supabase.from('spots').insert({
         map_id: selectedMapId, title: newSpot.title.trim(),
-        role: primaryRole, roles: newSpot.roles, side: newSpot.side,
+        role: primaryRole, roles: newSpot.roles, side: normalizeSide(newSpot.side),
         notes: newSpot.notes.trim(), youtube: newSpot.youtube.trim() || null,
         images: uploadedUrls, x: pendingPlacement.x, y: pendingPlacement.y,
         size: clampSpotSize(newSpot.size), requires_buildable: newSpot.requiresBuildable,
@@ -969,7 +963,7 @@ function IntelMapInner() {
 
     const { error } = await supabase.from('spots').update({
       title: editSpot.title.trim(), role: primaryRole, roles: editSpot.roles,
-      side: editSpot.side, notes: editSpot.notes.trim(),
+      side: normalizeSide(editSpot.side), notes: editSpot.notes.trim(),
       youtube: editSpot.youtube.trim() || null, size: clampSpotSize(editSpot.size),
       requires_buildable: editSpot.requiresBuildable,
       verified: editSpot.verified,

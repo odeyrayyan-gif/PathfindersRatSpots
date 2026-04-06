@@ -73,9 +73,10 @@ export function isOutOfBounds(x: number, y: number, orientation: MapOrientation)
 }
 
 export function normalizeSide(side: unknown): SpotSide {
-  const v = String(side ?? '').toLowerCase()
+  const v = String(side ?? '').trim().toLowerCase()
   if (v === 'axis') return 'Axis'
   if (v === 'allies') return 'Allies'
+  if (v === 'both') return 'Both'
   return 'Both'
 }
 
