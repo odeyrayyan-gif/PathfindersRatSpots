@@ -193,6 +193,7 @@ export function buildMapsWithSpots(mapsData: any[], spotsData: any[]): MapData[]
     name: map.name,
     image: map.image,
     overlay: map.overlay,
+    elevation: map.elevation ?? null,
     midpoints: Array.isArray(map.midpoints) ? map.midpoints : [],
     spots: spots.filter((s) => s.map_id === map.id),
   }))
