@@ -237,6 +237,11 @@ function IntelMapInner() {
   const [showSatellite,  setShowSatellite]  = React.useState(false)
   const [overlayOpacity, setOverlayOpacity] = React.useState(55)
   const [overlayBroken,  setOverlayBroken]  = React.useState<Record<string, boolean>>({})
+
+  // ── elevation overlay state
+  const [showElevation,    setShowElevation]    = React.useState(false)
+  const [elevationOpacity, setElevationOpacity] = React.useState(55)
+  const [elevationBroken,  setElevationBroken]  = React.useState<Record<string, boolean>>({})
   const [naturalAspect,  setNaturalAspect]  = React.useState<number>(1)
   const [containerDims,  setContainerDims]  = React.useState<{ w: number; h: number } | null>(null)
   // ── local display size offset — stored in localStorage, never written to DB
@@ -273,7 +278,8 @@ function IntelMapInner() {
   // ── derived values
   const selectedMap     = maps.find((m) => m.id === selectedMapId) || null
   const mapOrientation  = selectedMap ? getMapOrientation(selectedMap.name) : 'horizontal'
-  const hasSatellite    = Boolean(selectedMap?.overlay) && !overlayBroken[selectedMapId]
+  const hasSatellite    = Boolean(selectedMap?.overlay)   && !overlayBroken[selectedMapId]
+  const hasElevation    = Boolean(selectedMap?.elevation) && !elevationBroken[selectedMapId]
   const currentSpots    = selectedMap?.spots || []
   const selectedSpotEmbedUrl = getYouTubeEmbedUrl(selectedSpot?.youtube)
   const roleNames       = FIXED_ROLES.map((r) => r.name)
@@ -464,7 +470,7 @@ function IntelMapInner() {
     setSelectedSpot(null); setIsDrawerOpen(false)
     setSearchTerm(''); setRoleFilters(new Set(FIXED_ROLES.map((r) => r.name))); setSideFilters(new Set(['Axis', 'Allies', 'Both'])); setBuildableFilter(false); setSortMode('alphabetical')
     setScale(1); setPosition({ x: 0, y: 0 })
-    setShowAddSpot(false); setPendingPlacement(null); setShowSatellite(false)
+    setShowAddSpot(false); setPendingPlacement(null); setShowSatellite(false); setShowElevation(false)
     setEditingSpotId(null)
     setPlacementMode(null); setPlacementSpotId(null); setConeFirstEdge(null); setPreviewPoint(null)
     setRouteDrawMode(false); setDrawingPoints([])
@@ -1972,6 +1978,7 @@ function IntelMapInner() {
                   {placementMode === 'line_end'    && ` · Move to preview, click impact point`}
                   {routeDrawMode && ' · Hold mouse to draw route'}
                   {hasSatellite && showSatellite && ' · Satellite active'}
+                  {hasElevation && showElevation && ' · Elevation active'}
                 </p>
               </div>
             </div>
@@ -2002,6 +2009,20 @@ function IntelMapInner() {
                         onChange={(e) => setOverlayOpacity(Number(e.target.value))}
                         className="w-24 accent-emerald-500" />
                       <span className="w-9 text-xs text-zinc-300">{overlayOpacity}%</span>
+                    </>
+                  )}
+                </div>
+                <div className="pointer-events-auto flex items-center gap-2 rounded-2xl border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.94),rgba(8,20,12,0.92))] px-3 py-2 shadow-[0_12px_30px_rgba(0,0,0,0.35)] backdrop-blur-xl">
+                  <button onClick={() => { if (hasElevation) setShowElevation((p) => !p) }} disabled={!hasElevation}
+                    className={`rounded-xl border px-3 py-1.5 text-sm font-medium transition ${hasElevation ? showElevation ? 'border-amber-300/40 bg-amber-700/90 text-white hover:bg-amber-600' : 'border-amber-300/15 bg-amber-900/40 text-amber-50 hover:bg-amber-800/55' : 'cursor-not-allowed border-zinc-800 bg-zinc-900 text-zinc-500'}`}>
+                    {hasElevation ? (showElevation ? 'Elev On' : 'Elev Off') : 'No Elev'}
+                  </button>
+                  {hasElevation && showElevation && (
+                    <>
+                      <input type="range" min="0" max="100" value={elevationOpacity}
+                        onChange={(e) => setElevationOpacity(Number(e.target.value))}
+                        className="w-24 accent-amber-500" />
+                      <span className="w-9 text-xs text-zinc-300">{elevationOpacity}%</span>
                     </>
                   )}
                 </div>
@@ -2053,6 +2074,14 @@ function IntelMapInner() {
                         className="pointer-events-none absolute inset-0 h-full w-full object-cover"
                         draggable={false} style={{ opacity: overlayOpacity / 100 }}
                         onError={() => setOverlayBroken((p) => ({ ...p, [selectedMap.id]: true }))} />
+                    )}
+
+                    {/* Elevation overlay */}
+                    {hasElevation && showElevation && selectedMap.elevation && (
+                      <img src={selectedMap.elevation} alt={`${selectedMap.name} elevation`}
+                        className="pointer-events-none absolute inset-0 h-full w-full object-cover"
+                        draggable={false} style={{ opacity: elevationOpacity / 100 }}
+                        onError={() => setElevationBroken((p) => ({ ...p, [selectedMap.id]: true }))} />
                     )}
 
                     {/* ── Single SVG overlay for all annotations ── */}
