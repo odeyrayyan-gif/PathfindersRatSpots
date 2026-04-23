@@ -78,6 +78,7 @@ export type MapData = {
   name: string
   image: string
   overlay?: string | null
+  elevation?: string | null
   midpoints: string[]
   spots: Spot[]
 }
