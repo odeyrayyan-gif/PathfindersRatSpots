@@ -507,10 +507,12 @@ function IntelMapInner() {
   // setContainerDims → DOM change → ResizeObserver fires → setContainerDims again.
   React.useEffect(() => {
     if (!naturalAspect) return
+    let retryTimer: ReturnType<typeof setTimeout>
     const compute = () => {
       const vp = viewportRef.current
       if (!vp) return
       const parentW = vp.getBoundingClientRect().width
+      if (!parentW) { retryTimer = setTimeout(compute, 50); return }
       const maxH    = window.innerHeight * 0.78
       const hFromW  = parentW / naturalAspect
       const next    = hFromW <= maxH
@@ -520,14 +522,15 @@ function IntelMapInner() {
         prev && prev.w === next.w && prev.h === next.h ? prev : next
       )
     }
-    let initTimer = setTimeout(compute, 120)
+    compute()
     let debounceTimer: ReturnType<typeof setTimeout>
     const debouncedCompute = () => {
       clearTimeout(debounceTimer)
       debounceTimer = setTimeout(compute, 50)
     }
     window.addEventListener('resize', debouncedCompute)
-    return () => { clearTimeout(initTimer); window.removeEventListener('resize', debouncedCompute); clearTimeout(debounceTimer) }
+    return () => { clearTimeout(retryTimer); window.removeEventListener('resize', debouncedCompute); clearTimeout(debounceTimer) }
+  }, [naturalAspect])
   }, [naturalAspect])
 
   // ── effects: measure header heights for accurate sticky positioning
