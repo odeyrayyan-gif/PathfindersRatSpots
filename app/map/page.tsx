@@ -2052,8 +2052,9 @@ function IntelMapInner() {
                    mx-auto centers it when height-constrained (container narrower than parent). */}
               <div ref={mapContainerRef} className="relative mx-auto bg-black/30"
                 style={{
-                  width:  containerDims ? `${containerDims.w}px` : '100%',
-                  height: containerDims ? `${containerDims.h}px` : '56.25vw',
+                  width:       containerDims ? `${containerDims.w}px` : '100%',
+                  height:      containerDims ? `${containerDims.h}px` : 'auto',
+                  aspectRatio: containerDims ? undefined : '1 / 1',
                 }}>
                 {selectedMap ? (
                   <div className={`absolute inset-0 ${mapCursor}`}
