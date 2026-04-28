@@ -531,7 +531,6 @@ function IntelMapInner() {
     window.addEventListener('resize', debouncedCompute)
     return () => { clearTimeout(retryTimer); window.removeEventListener('resize', debouncedCompute); clearTimeout(debounceTimer) }
   }, [naturalAspect])
-  }, [naturalAspect])
 
   // ── effects: measure header heights for accurate sticky positioning
   // Hardcoded px values break on small monitors when headers wrap to different heights.
