@@ -242,7 +242,7 @@ function IntelMapInner() {
   const [showElevation,    setShowElevation]    = React.useState(false)
   const [elevationOpacity, setElevationOpacity] = React.useState(55)
   const [elevationBroken,  setElevationBroken]  = React.useState<Record<string, boolean>>({})
-  const [naturalAspect,  setNaturalAspect]  = React.useState<number>(1)
+  const [naturalAspect,  setNaturalAspect]  = React.useState<number>(0)
   const [containerDims,  setContainerDims]  = React.useState<{ w: number; h: number } | null>(null)
   // ── local display size offset — stored in localStorage, never written to DB
   // Each user can shift all dot sizes up/down without affecting others.
