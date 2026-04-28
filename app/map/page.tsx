@@ -520,14 +520,14 @@ function IntelMapInner() {
         prev && prev.w === next.w && prev.h === next.h ? prev : next
       )
     }
-    let rafId = requestAnimationFrame(compute)
+    let initTimer = setTimeout(compute, 120)
     let debounceTimer: ReturnType<typeof setTimeout>
     const debouncedCompute = () => {
       clearTimeout(debounceTimer)
       debounceTimer = setTimeout(compute, 50)
     }
     window.addEventListener('resize', debouncedCompute)
-    return () => { cancelAnimationFrame(rafId); window.removeEventListener('resize', debouncedCompute); clearTimeout(debounceTimer) }
+    return () => { clearTimeout(initTimer); window.removeEventListener('resize', debouncedCompute); clearTimeout(debounceTimer) }
   }, [naturalAspect])
 
   // ── effects: measure header heights for accurate sticky positioning
