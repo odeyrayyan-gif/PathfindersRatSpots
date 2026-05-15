@@ -64,6 +64,7 @@ import { ActivityPanel } from './_components/ActivityPanel'
 import { MapLightbox } from './_components/MapLightbox'
 import { MapLogoBar } from './_components/MapLogoBar'
 import { UndoDeleteToast } from './_components/UndoDeleteToast'
+import { useMapLightbox } from './_hooks/useMapLightbox'
 
 // ─── SVG OVERLAY COMPONENTS ───────────────────────────────────────────────────
 // All rendered inside a single viewBox="0 0 100 100" SVG.
@@ -261,8 +262,14 @@ function IntelMapInner() {
   })
 
   // ── lightbox
-  const [lightboxImages, setLightboxImages] = React.useState<string[]>([])
-  const [lightboxIndex, setLightboxIndex] = React.useState<number | null>(null)
+  const {
+    lightboxImages,
+    lightboxIndex,
+    openLightbox,
+    closeLightbox,
+    showPrevLightboxImage,
+    showNextLightboxImage,
+  } = useMapLightbox()
 
   // ── refs
   const viewportRef      = React.useRef<HTMLDivElement | null>(null) // outer overflow div (wheel events)
@@ -1333,47 +1340,6 @@ function IntelMapInner() {
 
   const selectedRoute      = selectedSpot?.routes?.find((r) => r.id === selectedRouteId) || null
   const selectedRouteEmbed = getYouTubeEmbedUrl(selectedRoute?.youtube)
-
-  const openLightbox = (images: string[], startIndex: number) => {
-    if (!images.length) return
-    const safeIndex = Math.max(0, Math.min(startIndex, images.length - 1))
-    setLightboxImages(images)
-    setLightboxIndex(safeIndex)
-  }
-
-  const closeLightbox = () => {
-    setLightboxIndex(null)
-    setLightboxImages([])
-  }
-
-  const showPrevLightboxImage = () => {
-    if (lightboxIndex === null || lightboxImages.length === 0) return
-    setLightboxIndex((prev) => {
-      if (prev === null) return prev
-      return prev === 0 ? lightboxImages.length - 1 : prev - 1
-    })
-  }
-
-  const showNextLightboxImage = () => {
-    if (lightboxIndex === null || lightboxImages.length === 0) return
-    setLightboxIndex((prev) => {
-      if (prev === null) return prev
-      return prev === lightboxImages.length - 1 ? 0 : prev + 1
-    })
-  }
-
-  React.useEffect(() => {
-    if (lightboxIndex === null) return
-
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'ArrowLeft') showPrevLightboxImage()
-      if (e.key === 'ArrowRight') showNextLightboxImage()
-      if (e.key === 'Escape') closeLightbox()
-    }
-
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [lightboxIndex, lightboxImages])
 
   // ── cursor style for map
   const mapCursor = (draggingSpotId !== null || draggingSnipeSide !== null) ? 'cursor-grabbing'
