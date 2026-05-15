@@ -214,6 +214,7 @@ function IntelMapInner() {
   // Refs mirror state so event handlers always read the current value without stale closures
   const draggingSpotIdRef    = React.useRef<number | string | null>(null)
   const draggingSnipeSideRef = React.useRef<ConeSide | null>(null)
+  const activePointerIdRef   = React.useRef<number | null>(null)
   // Direct DOM ref for the spot being dragged — bypasses React render cycle for smooth movement
   const draggedSpotElRef = React.useRef<HTMLElement | null>(null)
   const dragMoveRef = React.useRef(false)
@@ -699,7 +700,7 @@ function IntelMapInner() {
   // ── coordinate helper
   // Must use mapContainerRef (the inner aspect-square div), not viewportRef (outer div).
   // The outer div may be wider than the map area when max-h kicks in, causing a systematic offset.
-  const getMapPercent = (e: React.MouseEvent<HTMLDivElement>): { x: number; y: number } | null => {
+  const getMapPercent = (e: { clientX: number; clientY: number }): { x: number; y: number } | null => {
     if (!mapContainerRef.current) return null
     const rect = mapContainerRef.current.getBoundingClientRect()
     const vx   = e.clientX - rect.left
@@ -719,8 +720,32 @@ function IntelMapInner() {
   const zoomOut = () => setScale((p) => { const n = Math.max(p - 0.2, 1); setPosition((o) => clampPosition(o.x, o.y, n)); return n })
   const resetView = () => { setScale(1); setPosition({ x: 0, y: 0 }) }
 
-  // ── mouse handlers
-  const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+  const capturePointer = (e: React.PointerEvent<HTMLElement>) => {
+    activePointerIdRef.current = e.pointerId
+    try {
+      viewportRef.current?.setPointerCapture(e.pointerId)
+    } catch {
+      // Some browsers can throw if capture is attempted after cancellation.
+    }
+  }
+
+  const releasePointer = (e?: React.PointerEvent<HTMLElement>) => {
+    if (e) {
+      try {
+        if (viewportRef.current?.hasPointerCapture(e.pointerId)) {
+          viewportRef.current.releasePointerCapture(e.pointerId)
+        }
+      } catch {
+        // Ignore stale pointer captures.
+      }
+    }
+    activePointerIdRef.current = null
+  }
+
+  // ── pointer handlers
+  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!e.isPrimary) return
+    capturePointer(e)
     // Route drawing
     if (routeDrawMode && editingSpotId) {
       const pt = getMapPercent(e)
@@ -737,7 +762,8 @@ function IntelMapInner() {
     dragRef.current = { startX: e.clientX, startY: e.clientY, originX: position.x, originY: position.y }
   }
 
-  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (activePointerIdRef.current !== null && activePointerIdRef.current !== e.pointerId) return
     // ── Spot drag — update DOM directly, zero React re-renders during drag
     if (draggingSpotIdRef.current !== null) {
       const pt = getMapPercent(e); if (!pt) return
@@ -781,7 +807,8 @@ function IntelMapInner() {
     setPosition(clampPosition(dragRef.current.originX + dx, dragRef.current.originY + dy))
   }
 
-  const handleMouseUp = () => {
+  const handlePointerUp = (e?: React.PointerEvent<HTMLDivElement>) => {
+    releasePointer(e)
     // ── Commit dragged spot position
     if (draggingSpotIdRef.current !== null) {
       const id = draggingSpotIdRef.current
@@ -1646,9 +1673,9 @@ function IntelMapInner() {
                         <input value={newRouteConfig.youtube} onChange={(e) => setNewRouteConfig((p) => ({ ...p, youtube: e.target.value }))} placeholder="YouTube link" className={tinyInputClass + ' w-full'} />
                       </div>
                       <button onClick={() => setRouteDrawMode((p) => !p)} className={`w-full ${routeDrawMode ? buttonClass : softButtonClass}`}>
-                        {routeDrawMode ? 'Drawing — hold mouse on map' : 'Draw Route'}
+                        {routeDrawMode ? 'Drawing — press on map' : 'Draw Route'}
                       </button>
-                      {routeDrawMode && <p className="mt-1.5 text-xs text-zinc-500">Hold mouse down and drag. Release to finish.</p>}
+                      {routeDrawMode && <p className="mt-1.5 text-xs text-zinc-500">Press and drag with mouse, touch, or stylus. Release to finish.</p>}
                       {editSpot.routes.length > 0 && (
                         <div className="mt-3 space-y-2">
                           <label className="block text-[10px] uppercase tracking-[0.24em] text-zinc-500">Saved ({editSpot.routes.length})</label>
@@ -1903,12 +1930,12 @@ function IntelMapInner() {
                   {selectedMap?.name || (isLoading ? 'Loading maps...' : 'No map selected')}
                 </h2>
                 <p className="mt-1 text-sm text-zinc-400">
-                  Scroll to zoom · drag to pan
+                  Drag to pan · wheel or buttons to zoom
                   {showAddSpot && ' · Click to place new spot'}
                   {placementMode === 'cone_first'  && ` · Click 1st edge of ${editingConeSide} cone`}
                   {placementMode === 'cone_second' && ` · Move to preview, click 2nd edge`}
                   {placementMode === 'line_end'    && ` · Move to preview, click impact point`}
-                  {routeDrawMode && ' · Hold mouse to draw route'}
+                  {routeDrawMode && ' · Press and drag to draw route'}
                   {hasSatellite && showSatellite && ' · Satellite active'}
                   {hasElevation && showElevation && ' · Elevation active'}
                 </p>
@@ -1918,9 +1945,9 @@ function IntelMapInner() {
             <div ref={viewportRef}
               className="relative w-full select-none overflow-hidden rounded-[28px] border border-emerald-400/12 bg-emerald-950/12"
               style={{ touchAction: 'none', overscrollBehavior: 'contain' }}
-              onMouseMove={handleMouseMove}
-              onMouseUp={handleMouseUp}
-              onMouseLeave={handleMouseUp}>
+              onPointerMove={handlePointerMove}
+              onPointerUp={handlePointerUp}
+              onPointerCancel={handlePointerUp}>
 
               {/* Zoom + satellite controls */}
               <div className="pointer-events-none absolute left-3 top-3 z-20 flex flex-col gap-2">
@@ -1988,7 +2015,7 @@ function IntelMapInner() {
                 }}>
                 {selectedMap ? (
                   <div className={`absolute inset-0 ${mapCursor}`}
-                    onMouseDown={handleMouseDown}
+                    onPointerDown={handlePointerDown}
                     onClick={handleMapClick}
                     style={{ transform: `translate(${position.x}px, ${position.y}px) scale(${scale})`, transformOrigin: 'center center' }}>
 
@@ -2106,9 +2133,11 @@ function IntelMapInner() {
                             top:  `${draggingSnipeSide === side && snipeDragPreview ? snipeDragPreview.y : line.endY}%`,
                             transform: 'translate(-50%,-50%)', cursor: 'move'
                           }}
-                          onMouseDown={(e) => {
+                          onPointerDown={(e) => {
                             e.stopPropagation()
                             e.preventDefault()
+                            if (!e.isPrimary) return
+                            capturePointer(e)
                             draggingSnipeSideRef.current = side
                             setDraggingSnipeSide(side)
                             dragMoveRef.current = false
@@ -2130,10 +2159,12 @@ function IntelMapInner() {
                       return (
                         <button key={spot.id}
                           onClick={(e) => { e.stopPropagation(); if (!dragMoveRef.current) selectSpot(spot) }}
-                          onMouseDown={(e) => {
+                          onPointerDown={(e) => {
                             if (editingSpotId === spot.id) {
                               e.stopPropagation()
                               e.preventDefault()
+                              if (!e.isPrimary) return
+                              capturePointer(e)
                               draggingSpotIdRef.current = spot.id
                               draggedSpotElRef.current  = e.currentTarget
                               setDraggingSpotId(spot.id)
