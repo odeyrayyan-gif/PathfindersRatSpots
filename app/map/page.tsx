@@ -28,6 +28,13 @@ import {
   ROUTE_COLORS,
   ROUTE_LABELS,
 } from './_lib/constants'
+import {
+  buttonClass,
+  inputClass,
+  panelClass,
+  softButtonClass,
+  tinyInputClass,
+} from './_lib/styles'
 
 import {
   buildMapsWithSpots,
@@ -53,20 +60,16 @@ import {
 } from './_lib/helpers'
 import { ShapeMarker, MarkerIcon } from './_components/Marker'
 import { ConeShape, SnipeLineShape, RouteShape } from './_components/MapShapes'
+import { ActivityPanel } from './_components/ActivityPanel'
+import { MapLightbox } from './_components/MapLightbox'
+import { MapLogoBar } from './_components/MapLogoBar'
+import { UndoDeleteToast } from './_components/UndoDeleteToast'
 
 // ─── SVG OVERLAY COMPONENTS ───────────────────────────────────────────────────
 // All rendered inside a single viewBox="0 0 100 100" SVG.
 // Coordinates are identical to the % system used everywhere else.
 // 1 SVG unit = 1% of map = 20m.
 
-
-// ─── STYLE CONSTANTS ──────────────────────────────────────────────────────────
-
-const panelClass      = 'rounded-3xl border border-emerald-400/15 bg-[linear-gradient(180deg,rgba(18,52,29,0.84),rgba(11,28,16,0.9))] shadow-[0_20px_60px_rgba(0,0,0,0.42)] backdrop-blur-xl'
-const inputClass      = 'w-full rounded-2xl border border-emerald-300/15 bg-emerald-950/35 px-3 py-2.5 text-sm text-white outline-none transition placeholder:text-emerald-100/30 focus:border-emerald-300/50 focus:bg-emerald-950/50'
-const buttonClass     = 'rounded-2xl border border-emerald-300/25 bg-emerald-600/90 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-emerald-500 hover:border-emerald-200/40'
-const softButtonClass = 'rounded-2xl border border-emerald-300/15 bg-emerald-900/40 px-4 py-2.5 text-sm font-medium text-emerald-50 transition hover:bg-emerald-800/55'
-const tinyInputClass  = 'rounded-xl border border-emerald-300/15 bg-emerald-950/35 px-2 py-1.5 text-xs text-white outline-none transition focus:border-emerald-300/50'
 
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
 
@@ -1357,17 +1360,7 @@ function IntelMapInner() {
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(16,185,129,0.14),transparent_32%),linear-gradient(180deg,#060906_0%,#0a0f0b_100%)] text-white">
       <div className="mx-auto max-w-[1800px] px-4 pb-6 pt-3 md:px-6">
 
-        {/* ── Logo bar */}
-        <div ref={logoBarRef} className="sticky top-0 z-40 mb-4 overflow-hidden rounded-[28px] border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.92),rgba(8,20,12,0.88))] shadow-[0_20px_60px_rgba(0,0,0,0.45)] backdrop-blur-xl">
-          <div className="flex items-center justify-between px-4 py-3 md:py-4">
-            <a href="/" className="rounded-xl border border-emerald-300/15 bg-emerald-900/30 px-3 py-1.5 text-xs text-zinc-400 transition hover:text-white hover:bg-emerald-800/50">
-              ← Home
-            </a>
-            <img src="/pathfinders-logo.png" alt="Pathfinders"
-              className="max-h-[55px] w-auto object-contain md:max-h-[75px]" />
-            <div className="w-[60px]" />{/* spacer to keep logo centered */}
-          </div>
-        </div>
+        <MapLogoBar logoBarRef={logoBarRef} />
 
         {/* ── Row 1: filters */}
         <div ref={filterRow1Ref} className="z-30 mb-2 rounded-[28px] border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.92),rgba(8,20,12,0.88))] p-4 shadow-[0_20px_60px_rgba(0,0,0,0.45)] backdrop-blur-xl">
@@ -1889,79 +1882,16 @@ function IntelMapInner() {
 
               </div>
             ) : (
-            <div className={`${panelClass} p-4`}>
-              {/* Header */}
-              <div className="mb-3 flex items-center justify-between">
-                <span className="text-xs font-semibold uppercase tracking-[0.2em] text-zinc-300">Activity</span>
-                <div className="flex items-center gap-2">
-                  {feedHasNew && (
-                    <span className="rounded-full border border-emerald-300/30 bg-emerald-600/60 px-2 py-0.5 text-[10px] text-emerald-100">
-                      New
-                    </span>
-                  )}
-                  <button onClick={loadFeed} disabled={feedLoading}
-                    className="text-zinc-600 hover:text-zinc-300 transition text-sm" title="Refresh">
-                    {feedLoading ? '…' : '↻'}
-                  </button>
-                </div>
-              </div>
-
-              {/* Feed items */}
-              <div className="max-h-[72vh] overflow-y-auto space-y-px">
-                {feedLoading && feedItems.length === 0 ? (
-                  <div className="py-4 text-center text-xs text-zinc-600">Loading...</div>
-                ) : feedItems.length === 0 ? (
-                  <div className="py-4 text-center text-xs text-zinc-600">No changes yet.</div>
-                ) : feedItems.map((item) => {
-                  const isNew      = feedLastSeen !== '' && item.changed_at > feedLastSeen
-                  const spotName   = item.snapshot?.title ?? `Spot #${item.spot_id}`
-                  const mapId      = item.snapshot?.map_id ?? ''
-                  const mapLabel   = maps.find((m) => m.id === mapId)?.name ?? mapId
-                  const date       = new Date(item.changed_at)
-                  const diffMs     = Date.now() - date.getTime()
-                  const diffMins   = Math.floor(diffMs / 60000)
-                  const diffHrs    = Math.floor(diffMins / 60)
-                  const timeStr    = diffMins < 1  ? 'just now'
-                    : diffMins < 60 ? `${diffMins}m ago`
-                    : diffHrs  < 24 ? `${diffHrs}h ago`
-                    : date.toLocaleDateString()
-
-                  return (
-                    <div key={item.id}
-                      className={`flex gap-2 rounded-xl px-2 py-2.5 transition-colors ${isNew ? 'bg-emerald-500/8' : 'hover:bg-emerald-900/20'}`}>
-                      <div className="mt-1.5 flex-shrink-0">
-                        {isNew
-                          ? <span className="block h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                          : <span className="block h-1.5 w-1.5 rounded-full bg-zinc-700" />}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="text-[11px] leading-4 text-zinc-400">
-                          <span className="font-medium text-emerald-300">{item.changed_by_name || 'Someone'}</span>
-                          {' · '}
-                          <button
-                            onClick={() => {
-                              // Switch to the right map and open the spot
-                              const targetMap = maps.find((m) => m.id === mapId)
-                              if (targetMap) {
-                                setSelectedMapId(mapId)
-                                const spot = targetMap.spots.find((s) => s.id === item.spot_id)
-                                if (spot) setTimeout(() => selectSpot(spot), 80)
-                              }
-                            }}
-                            className="font-medium text-white hover:text-emerald-300 transition text-left">
-                            {spotName}
-                          </button>
-                        </div>
-                        {mapLabel && (
-                          <div className="mt-0.5 text-[10px] text-zinc-600">{mapLabel}</div>
-                        )}
-                        <div className="mt-0.5 text-[10px] text-zinc-700">{timeStr}</div>
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
+              <ActivityPanel
+                feedHasNew={feedHasNew}
+                feedItems={feedItems}
+                feedLastSeen={feedLastSeen}
+                feedLoading={feedLoading}
+                maps={maps}
+                onLoadFeed={loadFeed}
+                onSelectMap={setSelectedMapId}
+                onSelectSpot={selectSpot}
+              />
             )}
           </div>
 
@@ -2449,65 +2379,15 @@ function IntelMapInner() {
       </div>
 
 
-      {/* ── Undo delete toast */}
-      {undoToast && (
-        <div className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 flex items-center gap-3 rounded-2xl border border-red-500/30 bg-[rgba(20,5,5,0.95)] px-5 py-3 shadow-[0_8px_32px_rgba(0,0,0,0.6)] backdrop-blur-xl"
-          style={{ animation: 'slideUp 0.25s cubic-bezier(0.4,0,0.2,1)' }}>
-          <style>{`@keyframes slideUp { from { opacity:0; transform: translate(-50%, 16px); } to { opacity:1; transform: translate(-50%, 0); } }`}</style>
-          <span className="text-sm text-zinc-200">
-            <span className="font-medium text-white">"{undoToast.spot.title}"</span> deleted
-          </span>
-          <button onClick={undoDelete}
-            className="rounded-xl border border-emerald-400/40 bg-emerald-600/80 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-500 transition">
-            Undo
-          </button>
-        </div>
-      )}
+      <UndoDeleteToast spot={undoToast?.spot ?? null} onUndo={undoDelete} />
 
-      {/* Lightbox */}
-      {lightboxIndex !== null && lightboxImages[lightboxIndex] && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-6"
-          onClick={closeLightbox}>
-          <div className="relative flex max-h-[90vh] max-w-[95vw] items-center justify-center"
-            onClick={(e) => e.stopPropagation()}>
-            {lightboxImages.length > 1 && (
-              <button
-                onClick={showPrevLightboxImage}
-                className="absolute left-2 top-1/2 z-10 -translate-y-1/2 rounded-full bg-black/70 px-3 py-2 text-lg text-white hover:bg-black/90"
-                aria-label="Previous image"
-              >
-                ‹
-              </button>
-            )}
-
-            <button
-              onClick={closeLightbox}
-              className="absolute right-2 top-2 z-10 rounded-full bg-black/70 px-3 py-1 text-sm text-white hover:bg-black/90"
-            >
-              ✕
-            </button>
-
-            <img src={lightboxImages[lightboxIndex]} alt="Enlarged"
-              className="max-h-[90vh] max-w-[90vw] rounded-2xl object-contain" />
-
-            {lightboxImages.length > 1 && (
-              <button
-                onClick={showNextLightboxImage}
-                className="absolute right-2 top-1/2 z-10 -translate-y-1/2 rounded-full bg-black/70 px-3 py-2 text-lg text-white hover:bg-black/90"
-                aria-label="Next image"
-              >
-                ›
-              </button>
-            )}
-
-            {lightboxImages.length > 1 && (
-              <div className="absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-black/70 px-3 py-1 text-xs text-white">
-                {lightboxIndex + 1} / {lightboxImages.length}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+      <MapLightbox
+        images={lightboxImages}
+        index={lightboxIndex}
+        onClose={closeLightbox}
+        onPrevious={showPrevLightboxImage}
+        onNext={showNextLightboxImage}
+      />
     </div>
   )
 }
