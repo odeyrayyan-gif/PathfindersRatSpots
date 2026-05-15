@@ -1,6 +1,7 @@
 'use client'
 
 import React from 'react'
+import Link from 'next/link'
 import { useSession } from 'next-auth/react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
@@ -63,6 +64,7 @@ import { ConeShape, SnipeLineShape, RouteShape } from './_components/MapShapes'
 import { ActivityPanel } from './_components/ActivityPanel'
 import { MapLightbox } from './_components/MapLightbox'
 import { MapLogoBar } from './_components/MapLogoBar'
+import { MobileMapTabs, type MobileMapPanel } from './_components/MobileMapTabs'
 import { UndoDeleteToast } from './_components/UndoDeleteToast'
 import { useMapLightbox } from './_hooks/useMapLightbox'
 
@@ -132,6 +134,7 @@ function IntelMapInner() {
   const [editingSpotId,  setEditingSpotId]  = React.useState<number | null>(null)
   const [selectedRouteId,setSelectedRouteId]= React.useState<string | null>(null)
   const [isDrawerOpen,   setIsDrawerOpen]   = React.useState(false)
+  const [mobilePanel,    setMobilePanel]    = React.useState<MobileMapPanel>('map')
 
   // ── undo delete state
   const [undoToast,      setUndoToast]      = React.useState<{ spot: Spot; timerId: ReturnType<typeof setTimeout> } | null>(null)
@@ -276,7 +279,7 @@ function IntelMapInner() {
   const mapContainerRef  = React.useRef<HTMLDivElement | null>(null) // inner aspect-square div (coordinates)
   const fileInputRef     = React.useRef<HTMLInputElement | null>(null)
   const spotListRef      = React.useRef<HTMLDivElement | null>(null) // scrollable spot list
-  const spotItemRefs     = React.useRef<Map<number | string, HTMLDivElement>>(new Map()) // per-spot card refs
+  const spotItemRefs     = React.useRef<Map<number | string, HTMLElement>>(new Map()) // per-spot card refs
   const dragRef = React.useRef({ startX: 0, startY: 0, originX: 0, originY: 0 })
   // Header refs — dynamic sticky top values so small monitors don't get offset jumps
   const logoBarRef    = React.useRef<HTMLDivElement | null>(null)
@@ -1279,6 +1282,7 @@ function IntelMapInner() {
   // ── spot selection
   const selectSpot = (spot: Spot) => {
     setSelectedSpot(spot); setShowAddSpot(false); setEditingSpotId(null); setIsDrawerOpen(true)
+    setMobilePanel('details')
     resetPlacementState()
     setRouteDrawMode(false); setDrawingPoints([])
     setSelectedRouteId(null)
@@ -1310,7 +1314,7 @@ function IntelMapInner() {
       setPendingPlacement(null); setShowAddSpot(false); setEditingSpotId(null)
        return
     }
-    setShowAddSpot(true); setEditingSpotId(null);  setPendingPlacement(null)
+    setShowAddSpot(true); setEditingSpotId(null);  setPendingPlacement(null); setMobilePanel('spots')
   }
 
   // ── preview computations
@@ -1430,12 +1434,17 @@ function IntelMapInner() {
             </div>
             {/* Actions */}
             <div className="flex flex-col gap-2">
-              <button onClick={openAddSpot} disabled={!canAdd} className={`w-full ${showAddSpot ? buttonClass : softButtonClass} ${!canAdd ? 'cursor-not-allowed opacity-40' : ''}`}>
+              <button
+                onClick={openAddSpot}
+                disabled={!canAdd}
+                aria-pressed={showAddSpot}
+                className={`w-full ${showAddSpot ? buttonClass : softButtonClass} ${!canAdd ? 'cursor-not-allowed opacity-40' : ''}`}
+              >
                 {showAddSpot ? 'Cancel Add Spot' : 'Add Spot'}
               </button>
-              <a href="/admin" className={`${buttonClass} flex w-full items-center justify-center`}>
+              <Link href="/admin" className={`${buttonClass} flex w-full items-center justify-center`}>
                 Admin Panel
-              </a>
+              </Link>
             </div>
           </div>
         </div>
@@ -1444,13 +1453,13 @@ function IntelMapInner() {
         <div ref={filterRow2Ref} className="z-30 mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-[24px] border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.92),rgba(8,20,12,0.88))] px-4 py-3 shadow-[0_12px_40px_rgba(0,0,0,0.40)] backdrop-blur-xl">
           <span className="text-[10px] uppercase tracking-[0.30em] text-zinc-500">Layers</span>
           {/* Markers */}
-          <button onClick={() => setShowMarkers((p) => !p)}
+          <button onClick={() => setShowMarkers((p) => !p)} aria-pressed={showMarkers}
             className={`rounded-xl border px-3 py-1.5 text-xs font-medium transition ${showMarkers ? 'border-emerald-300/30 bg-emerald-600/80 text-white' : 'border-emerald-400/15 bg-emerald-950/40 text-zinc-400 hover:text-white'}`}>
             Markers
           </button>
           <div className="h-5 w-px bg-emerald-800/50" />
           {/* Cones */}
-          <button onClick={() => setShowCones((p) => !p)}
+          <button onClick={() => setShowCones((p) => !p)} aria-pressed={showCones}
             className={`rounded-xl border px-3 py-1.5 text-xs font-medium transition ${showCones ? 'border-emerald-300/30 bg-emerald-600/80 text-white' : 'border-emerald-400/15 bg-emerald-950/40 text-zinc-400 hover:text-white'}`}>
             Cones
           </button>
@@ -1464,23 +1473,23 @@ function IntelMapInner() {
           )}
           <div className="h-5 w-px bg-emerald-800/50" />
           {/* Snipe Lines */}
-          <button onClick={() => setShowFireLines((p) => !p)}
+          <button onClick={() => setShowFireLines((p) => !p)} aria-pressed={showFireLines}
             className={`rounded-xl border px-3 py-1.5 text-xs font-medium transition ${showFireLines ? 'border-emerald-300/30 bg-emerald-600/80 text-white' : 'border-emerald-400/15 bg-emerald-950/40 text-zinc-400 hover:text-white'}`}>
             Snipe Lines
           </button>
           <div className="h-5 w-px bg-emerald-800/50" />
           {/* Routes */}
-          <button onClick={() => setShowRoutes((p) => !p)}
+          <button onClick={() => setShowRoutes((p) => !p)} aria-pressed={showRoutes}
             className={`rounded-xl border px-3 py-1.5 text-xs font-medium transition ${showRoutes ? 'border-emerald-300/30 bg-emerald-600/80 text-white' : 'border-emerald-400/15 bg-emerald-950/40 text-zinc-400 hover:text-white'}`}>
             Routes
           </button>
           {showRoutes && (
             <>
-              <button onClick={() => setShowTruckRoutes((p) => !p)}
+              <button onClick={() => setShowTruckRoutes((p) => !p)} aria-pressed={showTruckRoutes}
                 className={`rounded-xl border px-3 py-1.5 text-xs font-medium transition ${showTruckRoutes ? 'border-blue-300/30 bg-blue-700/70 text-white' : 'border-emerald-400/15 bg-emerald-950/40 text-zinc-400 hover:text-white'}`}>
                 Trucks
               </button>
-              <button onClick={() => setShowTankRoutes((p) => !p)}
+              <button onClick={() => setShowTankRoutes((p) => !p)} aria-pressed={showTankRoutes}
                 className={`rounded-xl border px-3 py-1.5 text-xs font-medium transition ${showTankRoutes ? 'border-yellow-300/30 bg-yellow-700/60 text-white' : 'border-emerald-400/15 bg-emerald-950/40 text-zinc-400 hover:text-white'}`}>
                 Tanks
               </button>
@@ -1512,11 +1521,25 @@ function IntelMapInner() {
           </div>
         </div>
 
+        <MobileMapTabs
+          activePanel={mobilePanel}
+          detailLabel={selectedSpot ? 'Details' : 'Activity'}
+          spotCount={filteredSpots.length}
+          hasSelection={Boolean(selectedSpot)}
+          onPanelChange={setMobilePanel}
+        />
+
         {/* ── Main grid */}
         <div className="grid grid-cols-1 items-start gap-5 xl:grid-cols-[360px_minmax(0,1fr)_390px]">
 
           {/* ── Left side panel: selected spot replaces activity */}
-          <div className="xl:sticky xl:self-start" style={{ top: `${panelTop}px` }}>
+          <section
+            id="mobile-details-panel"
+            role="tabpanel"
+            aria-labelledby="mobile-details-tab"
+            className={`${mobilePanel === 'details' ? 'block' : 'hidden'} order-2 xl:order-none xl:block xl:sticky xl:self-start`}
+            style={{ top: `${panelTop}px` }}
+          >
             {selectedSpot ? (
               <div className={`${panelClass} p-4`}>
               {/* Drawer header */}
@@ -1886,10 +1909,15 @@ function IntelMapInner() {
                 onSelectSpot={selectSpot}
               />
             )}
-          </div>
+          </section>
 
           {/* ── Map panel */}
-          <div className={`${panelClass} p-4 md:p-5`}>
+          <section
+            id="mobile-map-panel"
+            role="tabpanel"
+            aria-labelledby="mobile-map-tab"
+            className={`${mobilePanel === 'map' ? 'block' : 'hidden'} order-1 xl:order-none xl:block ${panelClass} p-3 md:p-5`}
+          >
             <div className="mb-4 flex flex-wrap items-start justify-between gap-4">
               <div>
                 <h2 className="text-xl font-semibold text-white">
@@ -1911,6 +1939,9 @@ function IntelMapInner() {
             <div ref={viewportRef}
               className="relative w-full select-none overflow-hidden rounded-[28px] border border-emerald-400/12 bg-emerald-950/12"
               style={{ touchAction: 'none', overscrollBehavior: 'contain' }}
+              role="region"
+              aria-label="Interactive tactical map. Drag with mouse, touch, or stylus to pan. Use the zoom controls to change scale."
+              tabIndex={0}
               onPointerMove={handlePointerMove}
               onPointerUp={handlePointerUp}
               onPointerCancel={handlePointerUp}>
@@ -1918,13 +1949,14 @@ function IntelMapInner() {
               {/* Zoom + satellite controls */}
               <div className="pointer-events-none absolute left-3 top-3 z-20 flex flex-col gap-2">
                 <div className="pointer-events-auto flex items-center gap-2 rounded-2xl border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.94),rgba(8,20,12,0.92))] px-3 py-2 shadow-[0_12px_30px_rgba(0,0,0,0.35)] backdrop-blur-xl">
-                  <button onClick={zoomIn}    className="rounded-xl border border-emerald-300/15 bg-emerald-900/40 px-3 py-1.5 text-sm font-medium text-emerald-50 transition hover:bg-emerald-800/55">+</button>
-                  <button onClick={zoomOut}   className="rounded-xl border border-emerald-300/15 bg-emerald-900/40 px-3 py-1.5 text-sm font-medium text-emerald-50 transition hover:bg-emerald-800/55">−</button>
-                  <button onClick={resetView} className="rounded-xl border border-emerald-300/15 bg-emerald-900/40 px-3 py-1.5 text-sm font-medium text-emerald-50 transition hover:bg-emerald-800/55">Reset</button>
-                  <span className="ml-1 text-xs text-zinc-300">{scale.toFixed(1)}x</span>
+                  <button onClick={zoomIn} aria-label="Zoom in" className="min-h-10 rounded-xl border border-emerald-300/15 bg-emerald-900/40 px-3 py-1.5 text-sm font-medium text-emerald-50 transition hover:bg-emerald-800/55">+</button>
+                  <button onClick={zoomOut} aria-label="Zoom out" className="min-h-10 rounded-xl border border-emerald-300/15 bg-emerald-900/40 px-3 py-1.5 text-sm font-medium text-emerald-50 transition hover:bg-emerald-800/55">−</button>
+                  <button onClick={resetView} aria-label="Reset map view" className="min-h-10 rounded-xl border border-emerald-300/15 bg-emerald-900/40 px-3 py-1.5 text-sm font-medium text-emerald-50 transition hover:bg-emerald-800/55">Reset</button>
+                  <span className="ml-1 text-xs text-zinc-300" aria-live="polite">{scale.toFixed(1)}x</span>
                 </div>
                 <div className="pointer-events-auto flex items-center gap-2 rounded-2xl border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.94),rgba(8,20,12,0.92))] px-3 py-2 shadow-[0_12px_30px_rgba(0,0,0,0.35)] backdrop-blur-xl">
                   <button onClick={() => { if (hasSatellite) setShowSatellite((p) => !p) }} disabled={!hasSatellite}
+                    aria-pressed={hasSatellite ? showSatellite : undefined}
                     className={`rounded-xl border px-3 py-1.5 text-sm font-medium transition ${hasSatellite ? showSatellite ? 'border-emerald-300/40 bg-emerald-600/90 text-white hover:bg-emerald-500' : 'border-emerald-300/15 bg-emerald-900/40 text-emerald-50 hover:bg-emerald-800/55' : 'cursor-not-allowed border-zinc-800 bg-zinc-900 text-zinc-500'}`}>
                     {hasSatellite ? (showSatellite ? 'Sat On' : 'Sat Off') : 'No Sat'}
                   </button>
@@ -1939,6 +1971,7 @@ function IntelMapInner() {
                 </div>
                 <div className="pointer-events-auto flex items-center gap-2 rounded-2xl border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.94),rgba(8,20,12,0.92))] px-3 py-2 shadow-[0_12px_30px_rgba(0,0,0,0.35)] backdrop-blur-xl">
                   <button onClick={() => { if (hasElevation) setShowElevation((p) => !p) }} disabled={!hasElevation}
+                    aria-pressed={hasElevation ? showElevation : undefined}
                     className={`rounded-xl border px-3 py-1.5 text-sm font-medium transition ${hasElevation ? showElevation ? 'border-amber-300/40 bg-amber-700/90 text-white hover:bg-amber-600' : 'border-amber-300/15 bg-amber-900/40 text-amber-50 hover:bg-amber-800/55' : 'cursor-not-allowed border-zinc-800 bg-zinc-900 text-zinc-500'}`}>
                     {hasElevation ? (showElevation ? 'Elev On' : 'Elev Off') : 'No Elev'}
                   </button>
@@ -2138,10 +2171,12 @@ function IntelMapInner() {
                               dragPosRef.current  = null
                             }
                           }}
-                          className="group absolute -translate-x-1/2 -translate-y-1/2"
+                          className="group absolute flex -translate-x-1/2 -translate-y-1/2 items-center justify-center"
                           style={{
                             left: `${spot.x}%`,
                             top:  `${spot.y}%`,
+                            minWidth: 32,
+                            minHeight: 32,
                             opacity: spot.pending ? 0.68 : 1,
                             cursor: editingSpotId === spot.id ? 'move' : undefined,
                             pointerEvents: (placementMode || routeDrawMode) ? 'none' : undefined,
@@ -2179,10 +2214,16 @@ function IntelMapInner() {
                 )}
               </div>
             </div>
-          </div>
+          </section>
 
           {/* ── Right panel — spot list */}
-          <div className="xl:sticky xl:self-start xl:w-[360px] 2xl:w-[380px]" style={{ top: `${panelTop}px` }}>
+          <section
+            id="mobile-spots-panel"
+            role="tabpanel"
+            aria-labelledby="mobile-spots-tab"
+            className={`${mobilePanel === 'spots' ? 'block' : 'hidden'} order-3 xl:order-none xl:block xl:sticky xl:self-start xl:w-[360px] 2xl:w-[380px]`}
+            style={{ top: `${panelTop}px` }}
+          >
             <div className={`${panelClass} p-4 md:p-5`}>
 
               {/* Header */}
@@ -2306,14 +2347,17 @@ function IntelMapInner() {
                   const listSize    = Math.max(8, getRenderedSpotSize(spot))
 
                   return (
-                    <div
+                    <button
+                      type="button"
                       key={spot.id}
                       ref={(el) => { if (el) spotItemRefs.current.set(spot.id, el); else spotItemRefs.current.delete(spot.id) }}
-                      className={`group rounded-[18px] border cursor-pointer transition-all duration-300 ${
+                      className={`group w-full rounded-[18px] border text-left cursor-pointer transition-all duration-300 ${
                         isSelected && isDrawerOpen
                           ? 'border-emerald-300/40 bg-[linear-gradient(180deg,rgba(25,78,48,0.34),rgba(11,33,19,0.92))] shadow-[0_0_0_1px_rgba(52,211,153,0.16),0_14px_26px_rgba(0,0,0,0.18)]'
                           : 'border-emerald-400/8 bg-[linear-gradient(180deg,rgba(10,41,24,0.62),rgba(8,24,14,0.88))] hover:border-emerald-300/15 hover:bg-[linear-gradient(180deg,rgba(16,56,33,0.76),rgba(9,28,16,0.94))]'
                       } ${spot.pending ? 'opacity-75' : ''}`}
+                      aria-pressed={isSelected && isDrawerOpen}
+                      aria-label={`${isSelected && isDrawerOpen ? 'Close' : 'Open'} ${spot.title || 'Untitled Spot'} details`}
                       onClick={() => {
                         if (isSelected && isDrawerOpen) {
                           setSelectedSpot(null)
@@ -2366,12 +2410,12 @@ function IntelMapInner() {
                           <span className="text-sm">{isSelected && isDrawerOpen ? '•' : '›'}</span>
                         </div>
                       </div>
-                    </div>
+                    </button>
                   )
                 })}
               </div>
             </div>
-          </div>
+          </section>
         </div>
       </div>
 
