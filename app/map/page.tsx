@@ -219,6 +219,14 @@ function IntelMapInner() {
   const draggingSpotIdRef    = React.useRef<number | string | null>(null)
   const draggingSnipeSideRef = React.useRef<ConeSide | null>(null)
   const activePointerIdRef   = React.useRef<number | null>(null)
+  const activeMapPointersRef = React.useRef<Map<number, { clientX: number; clientY: number }>>(new Map())
+  const suppressNextMapClickRef = React.useRef(false)
+  const pinchRef = React.useRef<{
+    startDistance: number
+    startScale: number
+    startPosition: { x: number; y: number }
+    center: { x: number; y: number }
+  } | null>(null)
   // Direct DOM ref for the spot being dragged — bypasses React render cycle for smooth movement
   const draggedSpotElRef = React.useRef<HTMLElement | null>(null)
   const dragMoveRef = React.useRef(false)
@@ -240,6 +248,8 @@ function IntelMapInner() {
   const [scale,       setScale]       = React.useState(1)
   const [position,    setPosition]    = React.useState({ x: 0, y: 0 })
   const [isDragging,  setIsDragging]  = React.useState(false)
+  const scaleRef    = React.useRef(scale)
+  const positionRef = React.useRef(position)
 
   // ── satellite overlay state
   const [showSatellite,  setShowSatellite]  = React.useState(false)
@@ -297,6 +307,9 @@ function IntelMapInner() {
   const currentSpots    = selectedMap?.spots || []
   const selectedSpotEmbedUrl = getYouTubeEmbedUrl(selectedSpot?.youtube)
   const roleNames       = FIXED_ROLES.map((r) => r.name)
+
+  scaleRef.current = scale
+  positionRef.current = position
 
   const getRoleColor  = (r: string) => FIXED_ROLES.find((f) => f.name === r)?.color || 'bg-emerald-500'
   const getRoleIcon   = (r: string) => FIXED_ROLES.find((f) => f.name === r)?.icon  || '📍'
@@ -730,8 +743,74 @@ function IntelMapInner() {
   const zoomOut = () => setScale((p) => { const n = Math.max(p - 0.2, 1); setPosition((o) => clampPosition(o.x, o.y, n)); return n })
   const resetView = () => { setScale(1); setPosition({ x: 0, y: 0 }) }
 
-  const capturePointer = (e: React.PointerEvent<HTMLElement>) => {
-    activePointerIdRef.current = e.pointerId
+  const getPinchPair = () => Array.from(activeMapPointersRef.current.values()).slice(0, 2)
+
+  const getPinchDistance = (points: Array<{ clientX: number; clientY: number }>) => {
+    if (points.length < 2) return 0
+    const dx = points[0].clientX - points[1].clientX
+    const dy = points[0].clientY - points[1].clientY
+    return Math.sqrt(dx * dx + dy * dy)
+  }
+
+  const getPinchCenter = (points: Array<{ clientX: number; clientY: number }>) => ({
+    x: (points[0].clientX + points[1].clientX) / 2,
+    y: (points[0].clientY + points[1].clientY) / 2,
+  })
+
+  const startPinchGesture = () => {
+    if (draggingSpotIdRef.current !== null || draggingSnipeSideRef.current !== null) return false
+    const points = getPinchPair()
+    const distance = getPinchDistance(points)
+    if (distance < 8) return false
+
+    pinchRef.current = {
+      startDistance: distance,
+      startScale: scaleRef.current,
+      startPosition: positionRef.current,
+      center: getPinchCenter(points),
+    }
+    activePointerIdRef.current = null
+    suppressNextMapClickRef.current = true
+    setIsDragging(false)
+
+    if (isRouteDrawingRef.current) {
+      isRouteDrawingRef.current = false
+      drawingPointsRef.current = []
+      lastSampledPointRef.current = null
+      setDrawingPoints([])
+    }
+
+    return true
+  }
+
+  const handlePinchMove = () => {
+    if (activeMapPointersRef.current.size < 2) return false
+    if (!pinchRef.current && !startPinchGesture()) return true
+    if (!pinchRef.current || !mapContainerRef.current) return true
+
+    const points = getPinchPair()
+    const distance = getPinchDistance(points)
+    if (distance < 8) return true
+
+    const rect = mapContainerRef.current.getBoundingClientRect()
+    const currentCenter = getPinchCenter(points)
+    const pinch = pinchRef.current
+    const nextScale = Math.max(1, Math.min(8, pinch.startScale * (distance / pinch.startDistance)))
+    const zoomRatio = nextScale / pinch.startScale
+    const startOffsetX = pinch.center.x - rect.left - rect.width / 2
+    const startOffsetY = pinch.center.y - rect.top - rect.height / 2
+    const centerDeltaX = currentCenter.x - pinch.center.x
+    const centerDeltaY = currentCenter.y - pinch.center.y
+    const nextX = pinch.startPosition.x + centerDeltaX - startOffsetX * (zoomRatio - 1)
+    const nextY = pinch.startPosition.y + centerDeltaY - startOffsetY * (zoomRatio - 1)
+
+    setScale(nextScale)
+    setPosition(clampPosition(nextX, nextY, nextScale))
+    return true
+  }
+
+  const capturePointer = (e: React.PointerEvent<HTMLElement>, setActive = true) => {
+    if (setActive) activePointerIdRef.current = e.pointerId
     try {
       viewportRef.current?.setPointerCapture(e.pointerId)
     } catch {
@@ -752,10 +831,30 @@ function IntelMapInner() {
     activePointerIdRef.current = null
   }
 
+  const clearMapPointer = (e?: React.PointerEvent<HTMLElement>) => {
+    if (e) {
+      activeMapPointersRef.current.delete(e.pointerId)
+    } else {
+      activeMapPointersRef.current.clear()
+    }
+    if (activeMapPointersRef.current.size < 2) {
+      pinchRef.current = null
+    }
+  }
+
   // ── pointer handlers
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!e.isPrimary) return
+    activeMapPointersRef.current.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY })
     capturePointer(e)
+
+    if (activeMapPointersRef.current.size >= 2) {
+      e.preventDefault()
+      void startPinchGesture()
+      return
+    }
+
+    if (!e.isPrimary) return
+
     // Route drawing
     if (routeDrawMode && editingSpotId) {
       const pt = getMapPercent(e)
@@ -773,6 +872,11 @@ function IntelMapInner() {
   }
 
   const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (activeMapPointersRef.current.has(e.pointerId)) {
+      activeMapPointersRef.current.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY })
+      if (handlePinchMove()) return
+    }
+
     if (activePointerIdRef.current !== null && activePointerIdRef.current !== e.pointerId) return
     // ── Spot drag — update DOM directly, zero React re-renders during drag
     if (draggingSpotIdRef.current !== null) {
@@ -819,6 +923,11 @@ function IntelMapInner() {
 
   const handlePointerUp = (e?: React.PointerEvent<HTMLDivElement>) => {
     releasePointer(e)
+    clearMapPointer(e)
+    if (pinchRef.current || activeMapPointersRef.current.size > 0) {
+      setIsDragging(false)
+      return
+    }
     // ── Commit dragged spot position
     if (draggingSpotIdRef.current !== null) {
       const id = draggingSpotIdRef.current
@@ -892,6 +1001,12 @@ function IntelMapInner() {
   }
 
   const handleMapClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (suppressNextMapClickRef.current) {
+      suppressNextMapClickRef.current = false
+      e.preventDefault()
+      e.stopPropagation()
+      return
+    }
     if (routeDrawMode) return // handled in mouse down/up
     const pt = getMapPercent(e)
     if (!pt) return
@@ -1924,7 +2039,7 @@ function IntelMapInner() {
                   {selectedMap?.name || (isLoading ? 'Loading maps...' : 'No map selected')}
                 </h2>
                 <p className="mt-1 text-xs text-zinc-400 xl:text-sm">
-                  Drag to pan · wheel or buttons to zoom
+                  Drag to pan · pinch or buttons to zoom
                   {showAddSpot && ' · Click to place new spot'}
                   {placementMode === 'cone_first'  && ` · Click 1st edge of ${editingConeSide} cone`}
                   {placementMode === 'cone_second' && ` · Move to preview, click 2nd edge`}
@@ -1940,7 +2055,7 @@ function IntelMapInner() {
               className="relative w-full select-none overflow-hidden rounded-none border-y border-emerald-400/12 bg-emerald-950/12 xl:rounded-[28px] xl:border"
               style={{ touchAction: 'none', overscrollBehavior: 'contain' }}
               role="region"
-              aria-label="Interactive tactical map. Drag with mouse, touch, or stylus to pan. Use the zoom controls to change scale."
+              aria-label="Interactive tactical map. Drag with mouse, touch, or stylus to pan. Pinch with two fingers or use the zoom controls to change scale."
               tabIndex={0}
               onPointerMove={handlePointerMove}
               onPointerUp={handlePointerUp}
