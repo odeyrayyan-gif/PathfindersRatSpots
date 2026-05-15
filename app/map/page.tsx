@@ -1916,14 +1916,14 @@ function IntelMapInner() {
             id="mobile-map-panel"
             role="tabpanel"
             aria-labelledby="mobile-map-tab"
-            className={`${mobilePanel === 'map' ? 'block' : 'hidden'} order-1 xl:order-none xl:block ${panelClass} p-3 md:p-5`}
+            className={`${mobilePanel === 'map' ? 'block' : 'hidden'} order-1 xl:order-none xl:block ${panelClass} -mx-4 rounded-none border-x-0 p-0 shadow-none xl:mx-0 xl:rounded-3xl xl:border xl:p-5 xl:shadow-[0_20px_60px_rgba(0,0,0,0.42)]`}
           >
-            <div className="mb-4 flex flex-wrap items-start justify-between gap-4">
+            <div className="mb-2 flex flex-wrap items-start justify-between gap-3 px-4 xl:mb-4 xl:px-0">
               <div>
-                <h2 className="text-xl font-semibold text-white">
+                <h2 className="text-lg font-semibold text-white xl:text-xl">
                   {selectedMap?.name || (isLoading ? 'Loading maps...' : 'No map selected')}
                 </h2>
-                <p className="mt-1 text-sm text-zinc-400">
+                <p className="mt-1 text-xs text-zinc-400 xl:text-sm">
                   Drag to pan · wheel or buttons to zoom
                   {showAddSpot && ' · Click to place new spot'}
                   {placementMode === 'cone_first'  && ` · Click 1st edge of ${editingConeSide} cone`}
@@ -1937,7 +1937,7 @@ function IntelMapInner() {
             </div>
 
             <div ref={viewportRef}
-              className="relative w-full select-none overflow-hidden rounded-[28px] border border-emerald-400/12 bg-emerald-950/12"
+              className="relative w-full select-none overflow-hidden rounded-none border-y border-emerald-400/12 bg-emerald-950/12 xl:rounded-[28px] xl:border"
               style={{ touchAction: 'none', overscrollBehavior: 'contain' }}
               role="region"
               aria-label="Interactive tactical map. Drag with mouse, touch, or stylus to pan. Use the zoom controls to change scale."
@@ -1947,40 +1947,40 @@ function IntelMapInner() {
               onPointerCancel={handlePointerUp}>
 
               {/* Zoom + satellite controls */}
-              <div className="pointer-events-none absolute left-3 top-3 z-20 flex flex-col gap-2">
-                <div className="pointer-events-auto flex items-center gap-2 rounded-2xl border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.94),rgba(8,20,12,0.92))] px-3 py-2 shadow-[0_12px_30px_rgba(0,0,0,0.35)] backdrop-blur-xl">
-                  <button onClick={zoomIn} aria-label="Zoom in" className="min-h-10 rounded-xl border border-emerald-300/15 bg-emerald-900/40 px-3 py-1.5 text-sm font-medium text-emerald-50 transition hover:bg-emerald-800/55">+</button>
-                  <button onClick={zoomOut} aria-label="Zoom out" className="min-h-10 rounded-xl border border-emerald-300/15 bg-emerald-900/40 px-3 py-1.5 text-sm font-medium text-emerald-50 transition hover:bg-emerald-800/55">−</button>
-                  <button onClick={resetView} aria-label="Reset map view" className="min-h-10 rounded-xl border border-emerald-300/15 bg-emerald-900/40 px-3 py-1.5 text-sm font-medium text-emerald-50 transition hover:bg-emerald-800/55">Reset</button>
-                  <span className="ml-1 text-xs text-zinc-300" aria-live="polite">{scale.toFixed(1)}x</span>
+              <div className="pointer-events-none absolute left-2 top-2 z-20 flex max-w-[calc(100%-1rem)] flex-col items-start gap-1.5 xl:left-3 xl:top-3 xl:gap-2">
+                <div className="pointer-events-auto flex items-center gap-1.5 rounded-xl border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.94),rgba(8,20,12,0.92))] px-2 py-1.5 shadow-[0_10px_24px_rgba(0,0,0,0.35)] backdrop-blur-xl xl:gap-2 xl:rounded-2xl xl:px-3 xl:py-2">
+                  <button onClick={zoomIn} aria-label="Zoom in" className="min-h-8 rounded-lg border border-emerald-300/15 bg-emerald-900/40 px-2 py-1 text-xs font-medium text-emerald-50 transition hover:bg-emerald-800/55 xl:min-h-10 xl:rounded-xl xl:px-3 xl:py-1.5 xl:text-sm">+</button>
+                  <button onClick={zoomOut} aria-label="Zoom out" className="min-h-8 rounded-lg border border-emerald-300/15 bg-emerald-900/40 px-2 py-1 text-xs font-medium text-emerald-50 transition hover:bg-emerald-800/55 xl:min-h-10 xl:rounded-xl xl:px-3 xl:py-1.5 xl:text-sm">−</button>
+                  <button onClick={resetView} aria-label="Reset map view" className="min-h-8 rounded-lg border border-emerald-300/15 bg-emerald-900/40 px-2 py-1 text-xs font-medium text-emerald-50 transition hover:bg-emerald-800/55 xl:min-h-10 xl:rounded-xl xl:px-3 xl:py-1.5 xl:text-sm">Reset</button>
+                  <span className="ml-0.5 text-[11px] text-zinc-300 xl:ml-1 xl:text-xs" aria-live="polite">{scale.toFixed(1)}x</span>
                 </div>
-                <div className="pointer-events-auto flex items-center gap-2 rounded-2xl border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.94),rgba(8,20,12,0.92))] px-3 py-2 shadow-[0_12px_30px_rgba(0,0,0,0.35)] backdrop-blur-xl">
+                <div className="pointer-events-auto flex items-center gap-1.5 rounded-xl border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.94),rgba(8,20,12,0.92))] px-2 py-1.5 shadow-[0_10px_24px_rgba(0,0,0,0.35)] backdrop-blur-xl xl:gap-2 xl:rounded-2xl xl:px-3 xl:py-2">
                   <button onClick={() => { if (hasSatellite) setShowSatellite((p) => !p) }} disabled={!hasSatellite}
                     aria-pressed={hasSatellite ? showSatellite : undefined}
-                    className={`rounded-xl border px-3 py-1.5 text-sm font-medium transition ${hasSatellite ? showSatellite ? 'border-emerald-300/40 bg-emerald-600/90 text-white hover:bg-emerald-500' : 'border-emerald-300/15 bg-emerald-900/40 text-emerald-50 hover:bg-emerald-800/55' : 'cursor-not-allowed border-zinc-800 bg-zinc-900 text-zinc-500'}`}>
+                    className={`min-h-8 rounded-lg border px-2 py-1 text-xs font-medium transition xl:rounded-xl xl:px-3 xl:py-1.5 xl:text-sm ${hasSatellite ? showSatellite ? 'border-emerald-300/40 bg-emerald-600/90 text-white hover:bg-emerald-500' : 'border-emerald-300/15 bg-emerald-900/40 text-emerald-50 hover:bg-emerald-800/55' : 'cursor-not-allowed border-zinc-800 bg-zinc-900 text-zinc-500'}`}>
                     {hasSatellite ? (showSatellite ? 'Sat On' : 'Sat Off') : 'No Sat'}
                   </button>
                   {hasSatellite && showSatellite && (
                     <>
                       <input type="range" min="0" max="100" value={overlayOpacity}
                         onChange={(e) => setOverlayOpacity(Number(e.target.value))}
-                        className="w-24 accent-emerald-500" />
-                      <span className="w-9 text-xs text-zinc-300">{overlayOpacity}%</span>
+                        className="w-16 accent-emerald-500 xl:w-24" />
+                      <span className="w-8 text-[11px] text-zinc-300 xl:w-9 xl:text-xs">{overlayOpacity}%</span>
                     </>
                   )}
                 </div>
-                <div className="pointer-events-auto flex items-center gap-2 rounded-2xl border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.94),rgba(8,20,12,0.92))] px-3 py-2 shadow-[0_12px_30px_rgba(0,0,0,0.35)] backdrop-blur-xl">
+                <div className="pointer-events-auto flex items-center gap-1.5 rounded-xl border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(12,45,22,0.94),rgba(8,20,12,0.92))] px-2 py-1.5 shadow-[0_10px_24px_rgba(0,0,0,0.35)] backdrop-blur-xl xl:gap-2 xl:rounded-2xl xl:px-3 xl:py-2">
                   <button onClick={() => { if (hasElevation) setShowElevation((p) => !p) }} disabled={!hasElevation}
                     aria-pressed={hasElevation ? showElevation : undefined}
-                    className={`rounded-xl border px-3 py-1.5 text-sm font-medium transition ${hasElevation ? showElevation ? 'border-amber-300/40 bg-amber-700/90 text-white hover:bg-amber-600' : 'border-amber-300/15 bg-amber-900/40 text-amber-50 hover:bg-amber-800/55' : 'cursor-not-allowed border-zinc-800 bg-zinc-900 text-zinc-500'}`}>
+                    className={`min-h-8 rounded-lg border px-2 py-1 text-xs font-medium transition xl:rounded-xl xl:px-3 xl:py-1.5 xl:text-sm ${hasElevation ? showElevation ? 'border-amber-300/40 bg-amber-700/90 text-white hover:bg-amber-600' : 'border-amber-300/15 bg-amber-900/40 text-amber-50 hover:bg-amber-800/55' : 'cursor-not-allowed border-zinc-800 bg-zinc-900 text-zinc-500'}`}>
                     {hasElevation ? (showElevation ? 'Elev On' : 'Elev Off') : 'No Elev'}
                   </button>
                   {hasElevation && showElevation && (
                     <>
                       <input type="range" min="0" max="100" value={elevationOpacity}
                         onChange={(e) => setElevationOpacity(Number(e.target.value))}
-                        className="w-24 accent-amber-500" />
-                      <span className="w-9 text-xs text-zinc-300">{elevationOpacity}%</span>
+                        className="w-16 accent-amber-500 xl:w-24" />
+                      <span className="w-8 text-[11px] text-zinc-300 xl:w-9 xl:text-xs">{elevationOpacity}%</span>
                     </>
                   )}
                 </div>
