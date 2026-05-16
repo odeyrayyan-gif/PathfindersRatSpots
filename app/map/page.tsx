@@ -2274,8 +2274,8 @@ function IntelMapInner() {
                         <button key={spot.id}
                           onClick={(e) => { e.stopPropagation(); if (!dragMoveRef.current) selectSpot(spot) }}
                           onPointerDown={(e) => {
+                            e.stopPropagation()
                             if (editingSpotId === spot.id) {
-                              e.stopPropagation()
                               e.preventDefault()
                               if (!e.isPrimary) return
                               capturePointer(e)
