@@ -845,15 +845,19 @@ function IntelMapInner() {
   // ── pointer handlers
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     activeMapPointersRef.current.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY })
-    capturePointer(e)
 
     if (activeMapPointersRef.current.size >= 2) {
+      capturePointer(e)
       e.preventDefault()
       void startPinchGesture()
       return
     }
 
     if (!e.isPrimary) return
+
+    if (showAddSpot || placementMode) return
+
+    capturePointer(e)
 
     // Route drawing
     if (routeDrawMode && editingSpotId) {
@@ -866,7 +870,6 @@ function IntelMapInner() {
       }
       return
     }
-    if (showAddSpot || placementMode) return
     setIsDragging(true)
     dragRef.current = { startX: e.clientX, startY: e.clientY, originX: position.x, originY: position.y }
   }
